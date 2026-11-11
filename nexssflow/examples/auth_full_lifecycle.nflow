@@ -1,0 +1,181 @@
+# Full authentication lifecycle router for a host that loads github.com/nexssp/auth.
+# The generated require harness resolves nexssflow.Bundle(options). The host must
+# attach its live service and ActionBoundary with WithRuntimeDependencies for each
+# trusted execution. The boundary enforces caller, CSRF/origin, rate-limit, and
+# anti-abuse policy. This does not replace HTTP routes; OAuth and desktop remain
+# at the guarded HTTP/Transport boundary.
+# Load database, session-cookie, mail, OAuth, and optional Turnstile secrets from
+# the host deployment environment/secret manager before starting the Flow runner.
+# This Flow package reads none of those settings itself; Turnstile verification
+# belongs in the host ActionBoundary, not in this file.
+@require github.com/nexssp/auth
+
+@description "Route protected runtime credentials through validated auth pipelines"
+
+# The outer credentials key is intentionally redacted as a whole in Flow traces.
+@schema AuthDispatchRequest {
+  Operation   string         `json:"operation" validate:"required,oneof=register login logout password_forgot password_reset email_verify email_resend current_session"`
+  Credentials map[string]any `json:"credentials" validate:"required"`
+}
+
+@schema RegisterCredentials {
+  Email          string `json:"email" validate:"required,email"`
+  Username       string `json:"username" validate:"required"`
+  Password       string `json:"password" validate:"required"`
+  Confirmation   string `json:"confirmation" validate:"required"`
+  InviteCode     string `json:"invite_code"`
+  TermsAccepted  bool   `json:"terms_accepted"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema RegisterRequest {
+  Credentials RegisterCredentials `json:"credentials" validate:"required"`
+}
+@schema LoginCredentials {
+  Identifier     string `json:"identifier" validate:"required"`
+  Password       string `json:"password" validate:"required"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema LoginRequest {
+  Credentials LoginCredentials `json:"credentials" validate:"required"`
+}
+@schema PasswordForgotCredentials {
+  Email          string `json:"email" validate:"required,email"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema PasswordForgotRequest {
+  Credentials PasswordForgotCredentials `json:"credentials" validate:"required"`
+}
+@schema PasswordResetCredentials {
+  Token        string `json:"token" validate:"required"`
+  Password     string `json:"password" validate:"required"`
+  Confirmation string `json:"confirmation" validate:"required"`
+}
+@schema PasswordResetRequest {
+  Credentials PasswordResetCredentials `json:"credentials" validate:"required"`
+}
+@schema EmailVerifyCredentials {
+  Token          string `json:"token" validate:"required"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema EmailVerifyRequest {
+  Credentials EmailVerifyCredentials `json:"credentials" validate:"required"`
+}
+@schema EmailResendCredentials {
+  Email          string `json:"email" validate:"required,email"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema EmailResendRequest {
+  Credentials EmailResendCredentials `json:"credentials" validate:"required"`
+}
+
+@schema RegisterResponse {
+  Registered        bool   `json:"registered"`
+  Authenticated     bool   `json:"authenticated"`
+  EmailVerification string `json:"email_verification" validate:"required"`
+  Message           string `json:"message"`
+}
+@schema LoginResponse {
+  Authenticated  bool   `json:"authenticated"`
+  CredentialType string `json:"credential_type" validate:"required"`
+}
+@schema LogoutResponse {
+  Authenticated bool `json:"authenticated"`
+}
+@schema MessageResponse {
+  Message string `json:"message" validate:"required"`
+}
+@schema PasswordResetResponse {
+  PasswordChanged bool `json:"password_changed"`
+}
+@schema EmailVerifyResponse {
+  EmailVerified bool `json:"email_verified"`
+}
+@schema CurrentSessionResponse {
+  AccountID     string `json:"account_id" validate:"required"`
+  EmailVerified bool   `json:"email_verified"`
+}
+
+@pipeline auth_register
+  :request-schema=!RegisterRequest
+  :response-schema=!RegisterResponse
+  auth.register @{
+    email: .credentials.email,
+    username: .credentials.username,
+    password: .credentials.password,
+    confirmation: .credentials.confirmation,
+    invite_code: .credentials.invite_code,
+    terms_accepted: .credentials.terms_accepted,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+@pipeline auth_login
+  :request-schema=!LoginRequest
+  :response-schema=!LoginResponse
+  auth.login @{
+    identifier: .credentials.identifier,
+    password: .credentials.password,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+@pipeline auth_logout
+  :response-schema=!LogoutResponse
+  auth.logout @{}
+@end
+@pipeline auth_password_forgot
+  :request-schema=!PasswordForgotRequest
+  :response-schema=!MessageResponse
+  auth.password_forgot @{
+    email: .credentials.email,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+@pipeline auth_password_reset
+  :request-schema=!PasswordResetRequest
+  :response-schema=!PasswordResetResponse
+  auth.password_reset @{
+    token: .credentials.token,
+    password: .credentials.password,
+    confirmation: .credentials.confirmation
+  }
+@end
+@pipeline auth_email_verify
+  :request-schema=!EmailVerifyRequest
+  :response-schema=!EmailVerifyResponse
+  auth.email_verify @{
+    token: .credentials.token,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+@pipeline auth_email_resend
+  :request-schema=!EmailResendRequest
+  :response-schema=!MessageResponse
+  auth.email_resend @{
+    email: .credentials.email,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+@pipeline auth_current_session
+  :response-schema=!CurrentSessionResponse
+  auth.current_session @{}
+@end
+
+@pipeline auth_api
+  :request-schema=!AuthDispatchRequest
+  match (.operation) {
+    "register" -> pipeline.auth_register @{ credentials: .credentials },
+    "login" -> pipeline.auth_login @{ credentials: .credentials },
+    "logout" -> pipeline.auth_logout @{},
+    "password_forgot" -> pipeline.auth_password_forgot @{ credentials: .credentials },
+    "password_reset" -> pipeline.auth_password_reset @{ credentials: .credentials },
+    "email_verify" -> pipeline.auth_email_verify @{ credentials: .credentials },
+    "email_resend" -> pipeline.auth_email_resend @{ credentials: .credentials },
+    "current_session" -> pipeline.auth_current_session @{},
+    _ -> fail @{ kind: "BadRequest", message: "Unsupported auth operation" }
+  }
+@end
+
+# Host code invokes pipeline.auth_api with protected runtime input:
+# {"operation":"login","credentials":{"identifier":"...","password":"..."}}.
+# Never put passwords, tokens, or Turnstile values in this file, shell arguments,
+# journals, retries, caches, or unredacted hooks/telemetry.
+pipeline.auth_api

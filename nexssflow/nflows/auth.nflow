@@ -1,0 +1,164 @@
+# Host setup happens outside this file: build the auth.Service and request boundary
+# from deployment configuration, then attach trusted per-request auth/session state.
+# If enabled, the host boundary validates turnstile_token using its server-side
+# Turnstile secret. Never put environment secrets or challenge responses in source.
+@description "Importable host-configured auth REST routes"
+
+@schema AuthRegisterCredentials {
+  Email          string `json:"email" validate:"required,email"`
+  Username       string `json:"username" validate:"required"`
+  Password       string `json:"password" validate:"required"`
+  Confirmation   string `json:"confirmation" validate:"required"`
+  InviteCode     string `json:"invite_code"`
+  TermsAccepted  bool   `json:"terms_accepted"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema AuthRegisterRequest {
+  Credentials AuthRegisterCredentials `json:"credentials" validate:"required"`
+}
+@schema AuthRegisterResponse {
+  Registered        bool   `json:"registered"`
+  Authenticated     bool   `json:"authenticated"`
+  EmailVerification string `json:"email_verification" validate:"required"`
+  Message           string `json:"message"`
+}
+
+@schema AuthLoginCredentials {
+  Identifier     string `json:"identifier" validate:"required"`
+  Password       string `json:"password" validate:"required"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema AuthLoginRequest {
+  Credentials AuthLoginCredentials `json:"credentials" validate:"required"`
+}
+@schema AuthLoginResponse {
+  Authenticated  bool   `json:"authenticated"`
+  CredentialType string `json:"credential_type" validate:"required"`
+}
+
+@schema AuthPasswordForgotCredentials {
+  Email          string `json:"email" validate:"required,email"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema AuthPasswordForgotRequest {
+  Credentials AuthPasswordForgotCredentials `json:"credentials" validate:"required"`
+}
+@schema AuthPasswordResetCredentials {
+  Token        string `json:"token" validate:"required"`
+  Password     string `json:"password" validate:"required"`
+  Confirmation string `json:"confirmation" validate:"required"`
+}
+@schema AuthPasswordResetRequest {
+  Credentials AuthPasswordResetCredentials `json:"credentials" validate:"required"`
+}
+
+@schema AuthEmailVerifyCredentials {
+  Token          string `json:"token" validate:"required"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema AuthEmailVerifyRequest {
+  Credentials AuthEmailVerifyCredentials `json:"credentials" validate:"required"`
+}
+@schema AuthEmailResendCredentials {
+  Email          string `json:"email" validate:"required,email"`
+  TurnstileToken string `json:"turnstile_token"`
+}
+@schema AuthEmailResendRequest {
+  Credentials AuthEmailResendCredentials `json:"credentials" validate:"required"`
+}
+
+@schema AuthLogoutResponse {
+  Authenticated bool `json:"authenticated"`
+}
+@schema AuthMessageResponse {
+  Message string `json:"message" validate:"required"`
+}
+@schema AuthPasswordResetResponse {
+  PasswordChanged bool `json:"password_changed"`
+}
+@schema AuthEmailVerifyResponse {
+  EmailVerified bool `json:"email_verified"`
+}
+@schema AuthCurrentSessionResponse {
+  AccountID     string `json:"account_id" validate:"required"`
+  EmailVerified bool   `json:"email_verified"`
+}
+
+@pipeline auth_current_session
+  :route="GET /auth/session"
+  :response-schema=!AuthCurrentSessionResponse
+  auth.current_session @{}
+@end
+
+@pipeline auth_register
+  :route="POST /auth/register"
+  :request-schema=!AuthRegisterRequest
+  :response-schema=!AuthRegisterResponse
+  auth.register @{
+    email: .credentials.email,
+    username: .credentials.username,
+    password: .credentials.password,
+    confirmation: .credentials.confirmation,
+    invite_code: .credentials.invite_code,
+    terms_accepted: .credentials.terms_accepted,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+
+@pipeline auth_login
+  :route="POST /auth/login"
+  :request-schema=!AuthLoginRequest
+  :response-schema=!AuthLoginResponse
+  auth.login @{
+    identifier: .credentials.identifier,
+    password: .credentials.password,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+
+@pipeline auth_logout
+  :route="POST /auth/logout"
+  :response-schema=!AuthLogoutResponse
+  auth.logout @{}
+@end
+
+@pipeline auth_password_forgot
+  :route="POST /auth/password/forgot"
+  :request-schema=!AuthPasswordForgotRequest
+  :response-schema=!AuthMessageResponse
+  auth.password_forgot @{
+    email: .credentials.email,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+
+@pipeline auth_password_reset
+  :route="POST /auth/password/reset"
+  :request-schema=!AuthPasswordResetRequest
+  :response-schema=!AuthPasswordResetResponse
+  auth.password_reset @{
+    token: .credentials.token,
+    password: .credentials.password,
+    confirmation: .credentials.confirmation
+  }
+@end
+
+@pipeline auth_email_verify
+  :route="POST /auth/email/verify"
+  :request-schema=!AuthEmailVerifyRequest
+  :response-schema=!AuthEmailVerifyResponse
+  auth.email_verify @{
+    token: .credentials.token,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end
+
+@pipeline auth_email_resend
+  :route="POST /auth/email/resend"
+  :request-schema=!AuthEmailResendRequest
+  :response-schema=!AuthMessageResponse
+  auth.email_resend @{
+    email: .credentials.email,
+    turnstile_token: .credentials.turnstile_token
+  }
+@end

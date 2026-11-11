@@ -1,0 +1,8 @@
+@description "List 2026 standard invoices for an authenticated read-only accountant in their active workspace"
+@pipeline accountant_invoice_list
+  :auth
+  :role=viewer
+  invoice.list @{ year: "2026", type_filter: "standard", limit: 25, page: 1, sort: "-invoice_date" }
+@end
+
+{} | pipeline.accountant_invoice_list

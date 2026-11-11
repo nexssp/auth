@@ -1,0 +1,9 @@
+@description "Read the host-owned demo report only for an authenticated analyst with reports:read"
+@pipeline read_report
+  :auth
+  :role=analyst
+  :perm="reports:read"
+  reports.read
+@end
+
+{} | pipeline.read_report
