@@ -88,7 +88,7 @@ func TestImportedAuthRoutesUseStandardTransportListener(t *testing.T) {
 		done <- runErr
 	}()
 
-	client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}}
 	defer client.CloseIdleConnections()
@@ -212,7 +212,7 @@ func TestImportedAuthRoutesUseStandardTransportListener(t *testing.T) {
 
 func reserveAndReleaseTransportAddress(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

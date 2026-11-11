@@ -28,6 +28,8 @@ import (
 
 const sessionCookieName = "nexss_demo_session"
 
+const jsonErrorKey = "error"
+
 type requestContextKey struct{}
 
 type requestState struct {
@@ -124,28 +126,10 @@ func listDemoInvoices(organizationID string, request invoiceListRequest, records
 		if record.organizationID != organizationID {
 			continue
 		}
-		invoice := record.invoice
-		year := ""
-		if len(invoice.InvoiceDate) >= 4 {
-			year = invoice.InvoiceDate[:4]
-			yearSet[year] = struct{}{}
+		invoice, _, ok := matchingDemoInvoice(record.invoice, request, yearSet)
+		if ok {
+			matching = append(matching, invoice)
 		}
-		if request.Year != "" && request.Year != "all" && year != request.Year {
-			continue
-		}
-		if request.TypeFilter == "standard" && invoice.InvoiceType != "VAT" && invoice.InvoiceType != "ZW" && invoice.InvoiceType != "UPR" {
-			continue
-		}
-		if request.DateFrom != "" && invoice.InvoiceDate < request.DateFrom {
-			continue
-		}
-		if request.DateTo != "" && invoice.InvoiceDate > request.DateTo {
-			continue
-		}
-		if request.Search != "" && !strings.Contains(strings.ToLower(invoice.InvoiceNumber+" "+invoice.CustomerName), strings.ToLower(request.Search)) {
-			continue
-		}
-		matching = append(matching, invoice)
 	}
 	sort.SliceStable(matching, func(i, j int) bool {
 		if request.Sort == "invoice_date" {
@@ -164,11 +148,36 @@ func listDemoInvoices(organizationID string, request invoiceListRequest, records
 	if start >= total {
 		return invoiceListResponse{Data: []demoInvoice{}, Total: total, Years: years}
 	}
-	end := start + limit
-	if end > total {
-		end = total
-	}
+	end := min(start+limit, total)
 	return invoiceListResponse{Data: matching[start:end], Total: total, Years: years}
+}
+
+func matchingDemoInvoice(invoice demoInvoice, request invoiceListRequest, years map[string]struct{}) (demoInvoice, string, bool) {
+	year := ""
+	if len(invoice.InvoiceDate) >= 4 {
+		year = invoice.InvoiceDate[:4]
+		years[year] = struct{}{}
+	}
+	if request.Year != "" && request.Year != "all" && year != request.Year {
+		return demoInvoice{}, year, false
+	}
+	if request.TypeFilter == "standard" && !standardInvoiceType(invoice.InvoiceType) {
+		return demoInvoice{}, year, false
+	}
+	if request.DateFrom != "" && invoice.InvoiceDate < request.DateFrom {
+		return demoInvoice{}, year, false
+	}
+	if request.DateTo != "" && invoice.InvoiceDate > request.DateTo {
+		return demoInvoice{}, year, false
+	}
+	if request.Search != "" && !strings.Contains(strings.ToLower(invoice.InvoiceNumber+" "+invoice.CustomerName), strings.ToLower(request.Search)) {
+		return demoInvoice{}, year, false
+	}
+	return invoice, year, true
+}
+
+func standardInvoiceType(invoiceType string) bool {
+	return invoiceType == "VAT" || invoiceType == "ZW" || invoiceType == "UPR"
 }
 
 type memoryAccounts struct {
@@ -356,9 +365,9 @@ func (store *memoryBrowserSessions) EstablishBrowserSession(ctx context.Context,
 	}
 	store.sessions[token.Digest] = session
 	store.mu.Unlock()
-	http.SetCookie(state.writer, &http.Cookie{
+	http.SetCookie(state.writer, &http.Cookie{ //nolint:gosec // Secure is set for TLS; the non-production local demo also supports plain HTTP.
 		Name: sessionCookieName, Value: token.Value, Path: "/", Expires: session.ExpiresAt,
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: state.request.TLS != nil, SameSite: http.SameSiteLaxMode,
 	})
 	return nil
 }
@@ -370,6 +379,9 @@ func (store *memoryBrowserSessions) CurrentBrowserSession(ctx context.Context) (
 	}
 	cookie, err := state.request.Cookie(sessionCookieName)
 	if err != nil {
+		if !errors.Is(err, http.ErrNoCookie) {
+			return auth.BrowserSession{}, false, err
+		}
 		return auth.BrowserSession{}, false, nil
 	}
 	store.mu.RLock()
@@ -391,9 +403,9 @@ func (store *memoryBrowserSessions) EndBrowserSession(ctx context.Context) error
 		delete(store.sessions, auth.TokenDigest(cookie.Value))
 		store.mu.Unlock()
 	}
-	http.SetCookie(state.writer, &http.Cookie{
+	http.SetCookie(state.writer, &http.Cookie{ //nolint:gosec // Secure is set for TLS; the non-production local demo also supports plain HTTP.
 		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1,
-		HttpOnly: true, SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: state.request.TLS != nil, SameSite: http.SameSiteLaxMode,
 	})
 	return nil
 }
@@ -404,7 +416,7 @@ func authSessionIdentity(sessions *memoryBrowserSessions) func(http.Handler) htt
 			ctx := auth.WithHTTPExchange(request.Context(), request, writer)
 			session, authenticated, err := sessions.CurrentBrowserSession(ctx)
 			if err != nil {
-				writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "session lookup failed"})
+				writeJSON(writer, http.StatusInternalServerError, map[string]string{jsonErrorKey: "session lookup failed"})
 				return
 			}
 			if authenticated {
@@ -548,7 +560,7 @@ func newLocalApp() (*localApp, error) {
 	currentSession := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		result, err := auth.NewCurrentSessionAction(service).DoAny(request.Context(), auth.CurrentSessionRequest{})
 		if err != nil {
-			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "Not authenticated"})
+			writeJSON(writer, http.StatusUnauthorized, map[string]string{jsonErrorKey: "Not authenticated"})
 			return
 		}
 		writeJSON(writer, http.StatusOK, result)
@@ -571,11 +583,11 @@ func (app *localApp) runFlow(sourcePath string, input map[string]any) http.Handl
 	return func(writer http.ResponseWriter, request *http.Request) {
 		account, authenticated, err := app.service.CurrentBrowserAccount(request.Context())
 		if err != nil {
-			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "host session lookup failed"})
+			writeJSON(writer, http.StatusInternalServerError, map[string]string{jsonErrorKey: "host session lookup failed"})
 			return
 		}
 		if !authenticated {
-			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "login required"})
+			writeJSON(writer, http.StatusUnauthorized, map[string]string{jsonErrorKey: "login required"})
 			return
 		}
 
@@ -586,18 +598,18 @@ func (app *localApp) runFlow(sourcePath string, input map[string]any) http.Handl
 		trusted = xctx.WithPermissions(trusted, policy.permissions)
 		trusted, err = nexssflow.WithRuntimeDependencies(trusted, app.service, loopbackFlowBoundary{})
 		if err != nil {
-			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "host auth wiring is unavailable"})
+			writeJSON(writer, http.StatusInternalServerError, map[string]string{jsonErrorKey: "host auth wiring is unavailable"})
 			return
 		}
 
 		source, err := fs.ReadFile(app.authBundle.Fixtures, sourcePath)
 		if err != nil {
-			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "Flow example is unavailable"})
+			writeJSON(writer, http.StatusInternalServerError, map[string]string{jsonErrorKey: "Flow example is unavailable"})
 			return
 		}
 		execution, err := runner.Execute(trusted, app.flowConfig, string(source), sourcePath, input)
 		if err != nil {
-			writeJSON(writer, http.StatusForbidden, map[string]string{"error": "Flow authorization denied"})
+			writeJSON(writer, http.StatusForbidden, map[string]string{jsonErrorKey: "Flow authorization denied"})
 			return
 		}
 		writeJSON(writer, http.StatusOK, execution.Output)
@@ -620,7 +632,8 @@ func main() {
 	const address = "127.0.0.1:8085"
 	fmt.Printf("Local auth/Flow demo listening at http://%s\n", address)
 	fmt.Println("This loopback-only in-memory demo is not a production auth host.")
-	if err := http.ListenAndServe(address, app); err != nil {
+	server := &http.Server{Addr: address, Handler: app, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+	if err := server.ListenAndServe(); err != nil {
 		panic(err)
 	}
 }

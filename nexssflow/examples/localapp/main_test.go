@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -35,7 +36,11 @@ func TestLocalHostAuthHTTPAndProtectedFlows(t *testing.T) {
 		t.Fatalf("register response = %s", registerResult)
 	}
 
-	response, err = client.Get(suite.Server.URL + "/auth/session")
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, suite.Server.URL+"/auth/session", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +56,11 @@ func TestLocalHostAuthHTTPAndProtectedFlows(t *testing.T) {
 	}
 
 	forgedClient := &http.Client{}
-	forgedRequest, err := http.NewRequest(http.MethodGet, suite.Server.URL+"/auth/session", http.NoBody)
+	forgedRequest, err := http.NewRequestWithContext(context.Background(), http.MethodGet, suite.Server.URL+"/auth/session", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
-	forgedRequest.Header.Set("X-User-ID", "1")
+	forgedRequest.Header.Set("X-User-Id", "1")
 	response, err = forgedClient.Do(forgedRequest)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +175,12 @@ func TestLocalHostAuthHTTPAndProtectedFlows(t *testing.T) {
 
 func postJSON(t *testing.T, client *http.Client, endpoint, body string) *http.Response {
 	t.Helper()
-	response, err := client.Post(endpoint, "application/json", strings.NewReader(body))
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}

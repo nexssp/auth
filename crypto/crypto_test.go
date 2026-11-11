@@ -2,15 +2,32 @@ package crypto
 
 import (
 	"encoding/base64"
+	"errors"
 	"os"
 	"testing"
 )
 
 // TestMain sets the cryptokey before any test runs.
 func TestMain(m *testing.M) {
-	os.Setenv("NEXSS_CRYPTO_KEY", "test-super-secret-key-1234567890")
+	if err := os.Setenv("NEXSS_CRYPTO_KEY", "0123456789abcdef0123456789abcdef"); err != nil {
+		os.Exit(1)
+	}
 	code := m.Run()
 	os.Exit(code)
+}
+
+func TestEncryptionRequiresConfiguredKey(t *testing.T) {
+	t.Setenv("NEXSS_CRYPTO_KEY", "")
+	if _, err := EncryptString("data"); !errors.Is(err, ErrEncryptionKeyUnavailable) {
+		t.Fatalf("EncryptString error = %v, want ErrEncryptionKeyUnavailable", err)
+	}
+}
+
+func TestEncryptionRejectsInvalidKeyLength(t *testing.T) {
+	t.Setenv("NEXSS_CRYPTO_KEY", "short")
+	if _, err := EncryptString("data"); !errors.Is(err, ErrInvalidEncryptionKey) {
+		t.Fatalf("EncryptString error = %v, want ErrInvalidEncryptionKey", err)
+	}
 }
 
 func TestEncryptDecrypt(t *testing.T) {
@@ -118,7 +135,7 @@ func TestMalformedInputs(t *testing.T) {
 func BenchmarkEncrypt(b *testing.B) {
 	data := "Standard payload for benchmarking encryption performance 2026"
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := EncryptString(data); err != nil {
 			b.Fatalf("EncryptString failed: %v", err)
 		}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -109,7 +110,7 @@ func (store *memoryAccounts) FindByProviderIdentity(_ context.Context, provider,
 	return store.byID[id], nil
 }
 
-func (store *memoryAccounts) LinkProviderIdentity(_ context.Context, userID, provider, subject, email string) error {
+func (store *memoryAccounts) LinkProviderIdentity(_ context.Context, userID, provider, subject, _ string) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if _, ok := store.byID[userID]; !ok {
@@ -268,9 +269,9 @@ func (sender *memoryEmails) SendAuthEmail(_ context.Context, message AuthEmail) 
 func (sender *memoryEmails) latest(kind string) (AuthEmail, bool) {
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
-	for i := len(sender.messages) - 1; i >= 0; i-- {
-		if sender.messages[i].Kind == kind {
-			return sender.messages[i], true
+	for _, v := range slices.Backward(sender.messages) {
+		if v.Kind == kind {
+			return v, true
 		}
 	}
 	return AuthEmail{}, false
@@ -943,7 +944,7 @@ func TestHTTPHandlerRequiresHostBoundaryAndPreservesBrowserSessionLogin(t *testi
 	}
 	account := h.accounts.seedPassword(t, "http@example.test", "http-user", true)
 	body := `{"identifier":"http@example.test","password":"` + testPassword + `"}`
-	request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/auth/login", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -970,7 +971,7 @@ func TestHTTPBoundaryDenialStopsLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(`{"identifier":"http@example.test","password":"`+testPassword+`"}`))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/auth/login", strings.NewReader(`{"identifier":"http@example.test","password":"`+testPassword+`"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -1019,7 +1020,7 @@ func TestHTTPRegisterReportsPostCommitVerificationDeliveryFailureWithoutSuggesti
 		t.Fatal(err)
 	}
 	body := `{"email":"new@example.test","username":"new-user","password":"` + testPassword + `","confirmation":"` + testPassword + `","terms_accepted":true,"turnstile_token":"challenge-response"}`
-	request := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(body))
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/auth/register", strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -1094,7 +1095,7 @@ func TestHTTPProviderCallbackReturnsToHostAndPreservesRegistrationContext(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/auth/oauth/google/callback?state="+url.QueryEscape(parsed.Query().Get("state"))+"&code=provider-code", nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/auth/oauth/google/callback?state="+url.QueryEscape(parsed.Query().Get("state"))+"&code=provider-code", http.NoBody)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/editor?login=google" {
@@ -1137,7 +1138,7 @@ func TestOAuthDesktopProviderCallbackRedirectsLoopbackAndIssuesSeparateBearer(t 
 		t.Fatal(err)
 	}
 	callback := "/auth/oauth/google/callback?state=" + url.QueryEscape(parsed.Query().Get("state")) + "&code=provider-code"
-	request := httptest.NewRequest(http.MethodGet, callback, nil)
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, callback, http.NoBody)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusSeeOther {

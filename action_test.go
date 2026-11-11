@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func TestCurrentSessionActionRequiresMatchingTrustedSession(t *testing.T) {
 		t.Fatalf("bindings = %#v, want one GET route", bindings)
 	}
 	route, ok := bindings[0].(thttp.HTTPRoute)
-	if !ok || route.Method != "GET" || route.Path != "/auth/session" {
+	if !ok || route.Method != http.MethodGet || route.Path != "/auth/session" {
 		t.Fatalf("route binding = %#v, want GET /auth/session", bindings[0])
 	}
 

@@ -15,49 +15,101 @@ import (
 )
 
 var (
-	signKey   *rsa.PrivateKey
-	verifyKey *rsa.PublicKey
-	keyOnce   sync.Once
+	keyMu      sync.RWMutex
+	signKey    *rsa.PrivateKey
+	verifyKey  *rsa.PublicKey
+	keyOnce    sync.Once
+	errTempKey error
 )
 
+// InitKeys validates and installs a matching RSA key pair with at least 2048
+// bits. Parsed keys are swapped together so signing and verification cannot see
+// a partially initialized or mismatched pair.
 func InitKeys(privPEM, pubPEM []byte) error {
-	var err error
-	if signKey, err = jwt.ParseRSAPrivateKeyFromPEM(privPEM); err != nil {
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM(privPEM)
+	if err != nil {
 		return fmt.Errorf("auth: invalid private key: %w", err)
 	}
-	if verifyKey, err = jwt.ParseRSAPublicKeyFromPEM(pubPEM); err != nil {
+	if validateErr := privateKey.Validate(); validateErr != nil {
+		return fmt.Errorf("auth: invalid private key: %w", validateErr)
+	}
+	if privateKey.N.BitLen() < 2048 {
+		return errors.New("auth: RSA key must be at least 2048 bits")
+	}
+	publicKey, err := jwt.ParseRSAPublicKeyFromPEM(pubPEM)
+	if err != nil {
 		return fmt.Errorf("auth: invalid public key: %w", err)
 	}
+	if publicKey.N.BitLen() < 2048 || publicKey.N.Cmp(privateKey.N) != 0 || publicKey.E != privateKey.E {
+		return errors.New("auth: RSA public and private keys must match and be at least 2048 bits")
+	}
+
+	keyMu.Lock()
+	signKey, verifyKey = privateKey, publicKey
+	keyMu.Unlock()
 	return nil
 }
 
+// InitTempKeys generates one process-local 2048-bit RSA key pair if keys have
+// not already been installed. The generated key is unsuitable for persistent
+// production sessions because it changes when the process restarts.
 func InitTempKeys() error {
-	var initErr error
+	keyMu.RLock()
+	initialized := signKey != nil && verifyKey != nil
+	keyMu.RUnlock()
+	if initialized {
+		return nil
+	}
 	keyOnce.Do(func() {
 		key, err := rsa.GenerateKey(rand.Reader, 2048)
 		if err != nil {
-			initErr = err
+			errTempKey = err
 			return
 		}
-		signKey = key
-		verifyKey = &key.PublicKey
+		keyMu.Lock()
+		if signKey == nil && verifyKey == nil {
+			signKey, verifyKey = key, &key.PublicKey
+		}
+		keyMu.Unlock()
 	})
-	return initErr
+	return errTempKey
 }
 
+// InitOrLoadPersistentKeys loads a complete key pair, or creates one only when
+// both files are absent. A partial or unreadable pair is an error, not a reason
+// to silently replace credentials.
 func InitOrLoadPersistentKeys(privPath, pubPath string) error {
-	priv, err1 := os.ReadFile(privPath)
-	pub, err2 := os.ReadFile(pubPath)
-	if err1 == nil && err2 == nil {
-		return InitKeys(priv, pub)
+	privatePEM, privateErr := os.ReadFile(privPath)
+	publicPEM, publicErr := os.ReadFile(pubPath)
+	if privateErr == nil && publicErr == nil {
+		return InitKeys(privatePEM, publicPEM)
+	}
+	privateMissing := errors.Is(privateErr, os.ErrNotExist)
+	publicMissing := errors.Is(publicErr, os.ErrNotExist)
+	if privateErr != nil && !privateMissing {
+		return fmt.Errorf("auth: read private key: %w", privateErr)
+	}
+	if publicErr != nil && !publicMissing {
+		return fmt.Errorf("auth: read public key: %w", publicErr)
+	}
+	if !privateMissing || !publicMissing {
+		return errors.New("auth: both persistent RSA key files must exist or neither")
 	}
 	if err := InitTempKeys(); err != nil {
-		return err
+		return fmt.Errorf("auth: generate persistent keys: %w", err)
 	}
-	privPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(signKey)})
-	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(verifyKey)})
-	_ = os.WriteFile(privPath, privPEM, 0o600)
-	_ = os.WriteFile(pubPath, pubPEM, 0o644)
+	privateKey, publicKey := currentKeys()
+	if privateKey == nil || publicKey == nil {
+		return errors.New("auth: keys not initialized")
+	}
+	privateBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	publicBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(publicKey)})
+	if err := os.WriteFile(privPath, privateBytes, 0o600); err != nil {
+		return fmt.Errorf("auth: write private key: %w", err)
+	}
+	if err := os.WriteFile(pubPath, publicBytes, 0o600); err != nil {
+		return fmt.Errorf("auth: write public key: %w", err)
+	}
 	return nil
 }
 
@@ -67,7 +119,8 @@ type Tokens struct {
 }
 
 func GenerateTokens(tenantID, userID, role string) (*Tokens, error) {
-	if signKey == nil {
+	privateKey, _ := currentKeys()
+	if privateKey == nil {
 		return nil, errors.New("auth: keys not initialized")
 	}
 	now := time.Now()
@@ -78,7 +131,7 @@ func GenerateTokens(tenantID, userID, role string) (*Tokens, error) {
 		"exp":  now.Add(15 * time.Minute).Unix(),
 		"iat":  now.Unix(),
 		"jti":  fmt.Sprintf("a-%s-%d", userID, now.UnixNano()),
-	}).SignedString(signKey)
+	}).SignedString(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("auth: sign access token: %w", err)
 	}
@@ -87,7 +140,7 @@ func GenerateTokens(tenantID, userID, role string) (*Tokens, error) {
 		"ten": tenantID,
 		"exp": now.Add(30 * 24 * time.Hour).Unix(),
 		"jti": fmt.Sprintf("r-%s-%d", userID, now.UnixNano()),
-	}).SignedString(signKey)
+	}).SignedString(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("auth: sign refresh token: %w", err)
 	}
@@ -101,13 +154,14 @@ func GenerateTokensWithClaims(claims jwt.MapClaims) (*Tokens, error) {
 }
 
 func generateTokensWithClaims(claims jwt.MapClaims, refreshTTL time.Duration) (*Tokens, error) {
-	if signKey == nil {
+	privateKey, _ := currentKeys()
+	if privateKey == nil {
 		return nil, errors.New("auth: keys not initialized")
 	}
 	if refreshTTL <= 0 {
 		return nil, errors.New("auth: refresh token TTL must be positive")
 	}
-	access, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(signKey)
+	access, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("auth: sign access: %w", err)
 	}
@@ -119,11 +173,11 @@ func generateTokensWithClaims(claims jwt.MapClaims, refreshTTL time.Duration) (*
 	if jti, ok := claims["jti"]; ok {
 		refreshClaims["jti"] = jti
 	}
-	if ten, ok := claims["ten"]; ok {
-		refreshClaims["ten"] = ten
+	if tenantID, ok := claims["ten"]; ok {
+		refreshClaims["ten"] = tenantID
 	}
 
-	refresh, err := jwt.NewWithClaims(jwt.SigningMethodRS256, refreshClaims).SignedString(signKey)
+	refresh, err := jwt.NewWithClaims(jwt.SigningMethodRS256, refreshClaims).SignedString(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("auth: sign refresh: %w", err)
 	}
@@ -131,13 +185,20 @@ func generateTokensWithClaims(claims jwt.MapClaims, refreshTTL time.Duration) (*
 }
 
 func VerifyToken(tokenString string) (*jwt.Token, error) {
-	if verifyKey == nil {
+	_, publicKey := currentKeys()
+	if publicKey == nil {
 		return nil, errors.New("auth: keys not initialized")
 	}
-	return jwt.Parse(tokenString, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+	return jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
+		if token.Method.Alg() != jwt.SigningMethodRS256.Alg() {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		return verifyKey, nil
-	}, jwt.WithLeeway(5*time.Second))
+		return publicKey, nil
+	}, jwt.WithLeeway(5*time.Second), jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
+}
+
+func currentKeys() (*rsa.PrivateKey, *rsa.PublicKey) {
+	keyMu.RLock()
+	defer keyMu.RUnlock()
+	return signKey, verifyKey
 }

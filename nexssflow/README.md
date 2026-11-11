@@ -39,9 +39,41 @@ return err
 
 `auth.WithHTTPExchange` is the bridge for a `BrowserSessionHost` that needs the live request or must set/clear a cookie on the response. A session host can call `auth.HTTPExchangeFromContext(ctx)` during `EstablishBrowserSession` or `EndBrowserSession`. Use it only for that request; do not retain or serialize the response writer. Cookie rotation, expiry, `Secure`, `HttpOnly`, `SameSite`, path/domain, and CSRF-token behavior remain host-owned.
 
+## Turnstile setup
+
+For a public browser-facing deployment, configure Cloudflare Turnstile in the host and wrap the host `ActionBoundary`; the Flow package does not load a `.env` file or read environment variables. Set `TURNSTILE_SITE_KEY` in the browser application, keep `TURNSTILE_SECRET_KEY` server-only, and configure `TURNSTILE_EXPECTED_HOSTNAME` to the exact hostname on which the widget is served. Load the secret from the deployment's secret manager before starting the process.
+
+```go
+verifier, err := auth.NewCloudflareTurnstileVerifier(auth.CloudflareTurnstileConfig{
+    SecretKey:        os.Getenv("TURNSTILE_SECRET_KEY"),
+    ExpectedHostname: os.Getenv("TURNSTILE_EXPECTED_HOSTNAME"),
+})
+if err != nil {
+    return err
+}
+
+secureBoundary, err := nexssflow.NewTurnstileActionBoundary(
+    hostActionBoundary,
+    verifier,
+    auth.DefaultTurnstileOperations()...,
+)
+if err != nil {
+    return err
+}
+
+requestContext, err := nexssflow.WithRuntimeDependencies(requestContext, service, secureBoundary)
+if err != nil {
+    return err
+}
+```
+
+Render the browser widget with the public site key and the action matching the operation, then send its response in the JSON `turnstile_token` field. The defaults require actions `login`, `register`, `password_reset` (for both forgot and reset), `email_verify` (also used by email resend), `oauth_begin`, and `desktop_start`. The server checks the Siteverify `success`, `hostname`, and exact `action` values; missing or rejected tokens are denied, and Siteverify outages fail closed. Do not verify the same token again in the wrapped host boundary.
+
+For raw HTTP endpoints, use `auth.NewSecureHTTPHandler` with the same verifier. Use `auth.NewHTTPHandler` or custom Flow operations only when the host intentionally supplies equivalent anti-abuse verification itself. See Cloudflare's [Siteverify API](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/) and [test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/); test keys are for non-production tests only and do not validate the real site's configuration.
+
 ## OAuth and desktop endpoints
 
-OAuth and desktop flows keep using the guarded core handler from `auth.NewHTTPHandler`; the auth Flow module does not add fake pipelines for these raw HTTP protocols. To put them on the same Transport listener, register the handler's routes as `thttp.RawHandler` bindings in a host-owned action bundle. Transport v0.12.0 discovers raw-handler bindings alongside the Flow `:route` pipelines, and the same host middleware supplies the request context and response writer. Alternatively, mount `auth.NewHTTPHandler` on a host-owned mux. Its HTTP `RequestBoundary` remains mandatory.
+OAuth and desktop flows keep using the guarded core handler from `auth.NewSecureHTTPHandler`; the auth Flow module does not add fake pipelines for these raw HTTP protocols. To put them on the same Transport listener, register the handler's routes as `thttp.RawHandler` bindings in a host-owned action bundle. Transport v0.12.0 discovers raw-handler bindings alongside the Flow `:route` pipelines, and the same host middleware supplies the request context and response writer. Alternatively, mount the secure handler on a host-owned mux. The host `RequestBoundary` remains mandatory.
 
 The raw endpoints are:
 

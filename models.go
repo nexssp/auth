@@ -41,6 +41,8 @@ type OAuthConfig struct {
 // ---------------------------------------------------------------------
 
 // Store defines persistence operations. Can be implemented by GORM, raw SQL, or Memory.
+//
+//nolint:interfacebloat // Store is a legacy compatibility contract spanning the plugin subsystems.
 type Store interface {
 	// User CRUD
 	GetUserByEmail(ctx context.Context, email string) (*User, error)
@@ -89,7 +91,10 @@ type Emailer interface {
 	Send(ctx context.Context, to, subject, body string) error
 }
 
-// Config controls the authentication plugin.
+// Config controls the legacy authentication plugin.
+//
+// Deprecated: Config is for development/test compatibility. Production hosts
+// must supply adapters through Service and use the guarded HTTP or Flow APIs.
 type Config struct {
 	Store         Store
 	Emailer       Emailer
@@ -115,7 +120,8 @@ type Config struct {
 	LoginFailWindow  time.Duration // e.g., within 15 minutes
 	LoginLockout     time.Duration // e.g., ban for 30 minutes
 
-	// DesktopMode bypasses strict security checks for local offline-first apps.
+	// DesktopMode enables legacy local-development behavior. It does not make the
+	// legacy plugin suitable for production or public network exposure.
 	DesktopMode bool
 
 	// PublicPaths bypasses JWT validation for specified prefixes.

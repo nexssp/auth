@@ -126,7 +126,7 @@ func (s *GORMStore) GetUserByEmail(ctx context.Context, email string) (*User, er
 	// In the context of Auth, an email not being found is an expected domain state.
 	if err := s.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).WithContext(ctx).Where("email = ?", email).First(&m).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
+			return nil, ErrAccountNotFound
 		}
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func (s *GORMStore) GetUserByID(ctx context.Context, id string) (*User, error) {
 	var m UserModel
 	if err := s.db.Session(&gorm.Session{Logger: logger.Default.LogMode(logger.Silent)}).WithContext(ctx).Where("id = ?", id).First(&m).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
+			return nil, ErrAccountNotFound
 		}
 		return nil, err
 	}

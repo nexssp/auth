@@ -37,10 +37,18 @@ type Plugin struct {
 	bruteProtector fail2ban.Protector
 }
 
+// New constructs the legacy JWT/plugin API.
+//
+// Deprecated: This API is restricted to explicitly named development/test
+// environments. Production hosts should use NewService and the guarded HTTP or
+// Flow APIs with host-owned persistence, session, and request-boundary adapters.
 func New(cfg Config) (*Plugin, error) {
+	if !isLegacyDevelopmentEnvironment(cfg.Env) {
+		return nil, errors.New("auth: legacy Plugin is available only in development/test environments; use NewService for production")
+	}
 	cfg.applyDefaults()
 
-	isDev := cfg.DesktopMode || strings.EqualFold(cfg.Env, "development")
+	isDev := isLegacyDevelopmentEnvironment(cfg.Env)
 
 	if cfg.JWTPrivateKey == nil || cfg.JWTPublicKey == nil {
 		if isDev {
@@ -78,25 +86,33 @@ func New(cfg Config) (*Plugin, error) {
 	}
 
 	p.protect = JWTMiddleware(JWTConfig{
-		VerifyFn: func(ctx context.Context, t string) (jwt.MapClaims, error) {
+		VerifyFn: func(_ context.Context, t string) (jwt.MapClaims, error) {
 			tok, err := VerifyToken(t)
 			if err != nil || !tok.Valid {
 				return nil, err
 			}
-			return tok.Claims.(jwt.MapClaims), nil
+			claims, ok := tok.Claims.(jwt.MapClaims)
+			if !ok {
+				return nil, errors.New("auth: invalid token claims")
+			}
+			return claims, nil
 		},
 		Optional:    cfg.DesktopMode,
 		PublicPaths: cfg.PublicPaths,
 
-		TokenSource: func(r *http.Request) string {
-			if v := r.Header.Get("Authorization"); len(v) > 7 && v[:7] == "Bearer " {
-				return v[7:]
-			}
-			return r.URL.Query().Get("token")
-		},
+		TokenSource: bearerToken,
 	})
 
 	return p, nil
+}
+
+func isLegacyDevelopmentEnvironment(environment string) bool {
+	switch strings.ToLower(strings.TrimSpace(environment)) {
+	case "dev", "development", "test":
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Plugin) Actions() []action.AnyAction              { return p.actions }
@@ -135,7 +151,9 @@ type refreshReq struct {
 
 func (r *refreshReq) FromHTTPRequest(req *http.Request) error {
 	if req.Body != nil && req.ContentLength > 0 {
-		_ = json.NewDecoder(req.Body).Decode(r)
+		if err := json.NewDecoder(req.Body).Decode(r); err != nil {
+			return xerr.BadRequest("invalid request body")
+		}
 	}
 	if r.RefreshToken == "" {
 		if c, err := req.Cookie("refresh_token"); err == nil {
@@ -224,7 +242,7 @@ func (p *Plugin) buildRegister() action.AnyAction {
 
 	return action.New("auth.register", func(ctx context.Context, req credentialsReq) (*action.MessageRes, error) {
 		existing, err := p.cfg.Store.GetUserByEmail(ctx, req.Email)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrAccountNotFound) {
 			return nil, xerr.Database("database lookup failed", err)
 		}
 		if existing != nil {
@@ -273,7 +291,7 @@ func (p *Plugin) buildResendVerification() action.AnyAction {
 	return action.New("auth.resend-verification", func(ctx context.Context, req resendReq) (*action.MessageRes, error) {
 		user, err := p.cfg.Store.GetUserByEmail(ctx, req.Email)
 		if err != nil || user == nil || user.Verified {
-			return &action.MessageRes{Message: "If the email exists and is not verified, a new link was sent"}, nil
+			return &action.MessageRes{Message: "If the email exists and is not verified, a new link was sent"}, nil //nolint:nilerr // Keep lookup failures indistinguishable from unknown accounts.
 		}
 		go p.sendVerification(context.WithoutCancel(ctx), user)
 		return &action.MessageRes{Message: "If the email exists and is not verified, a new link was sent"}, nil
@@ -288,90 +306,22 @@ func (p *Plugin) buildLogin() action.AnyAction {
 
 	return action.New("auth.login", func(ctx context.Context, req credentialsReq) (authRes, error) {
 		user, err := p.cfg.Store.GetUserByEmail(ctx, req.Email)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrAccountNotFound) {
 			return authRes{}, xerr.Database("lookup failed", err)
 		}
-
-		var hash []byte
-		if user != nil {
-			hash = user.Password
-		} else {
-			hash = []byte("$2a$10$7EqJtq98hPqEX7fNZaFWoOh231v4fFkC6.2qg07aE3wS8jXkXW.K2")
+		if errors.Is(err, ErrAccountNotFound) {
+			user = nil
 		}
-
-		err = bcrypt.CompareHashAndPassword(hash, []byte(req.Password))
-		valid := 0
-		if err == nil && user != nil {
-			valid = 1
-		}
-		if subtle.ConstantTimeByteEq(byte(valid), 0) == 1 {
-			return authRes{}, xerr.Unauthorized("Nieprawidłowy adres e-mail lub hasło")
+		if !validLegacyLoginPassword(user, req.Password) {
+			return authRes{}, xerr.Unauthorized("Nieprawidłowy adres e-mail lub hasło") //nolint:misspell // "adres" is correct Polish for "address".
 		}
 		if !user.Verified {
 			return authRes{}, xerr.Unauthorized("Konto nie jest zweryfikowane")
 		}
 
 		safeCtx := context.WithoutCancel(ctx)
-
-		requires2FA := false
-		mfaEnabled := true
-		if envMfa := os.Getenv("AUTH_MFA_REQUIRED"); envMfa != "" {
-			mfaEnabled = envMfa == "true"
-		} else if p.cfg.Env == "development" || p.cfg.Env == "dev" || p.cfg.DesktopMode {
-			mfaEnabled = false
-		}
-
-		if mfaEnabled && len(p.cfg.MFAProviders) > 0 {
-			requires2FA = true
-
-			if req.TrustedDeviceToken != "" {
-				if tok, err := VerifyToken(req.TrustedDeviceToken); err == nil {
-					if claims, ok := tok.Claims.(jwt.MapClaims); ok && claims["type"] == "trusted_device" && claims["sub"] == user.ID {
-						requires2FA = false
-					}
-				}
-			}
-		}
-
-		if len(p.cfg.MFAProviders) == 0 {
-			requires2FA = false
-		}
-
-		if requires2FA {
-			max := big.NewInt(1000000)
-			n, _ := rand.Int(rand.Reader, max)
-			code := fmt.Sprintf("%06d", n.Int64())
-
-			dbToken := user.ID + ":" + code
-			exp := time.Now().Add(5 * time.Minute)
-			if err := p.cfg.Store.CreateVerificationToken(safeCtx, user.ID, dbToken, exp); err != nil {
-				return authRes{}, xerr.Database("Błąd generowania sesji", err)
-			}
-
-			if tmplMailer, ok := p.cfg.Emailer.(interface {
-				SendTemplate(context.Context, string, string, string, any) error
-			}); ok {
-				go tmplMailer.SendTemplate(safeCtx, user.Email, "Twój kod logowania", "auth", map[string]string{
-					"Title":      "Logowanie 2FA",
-					"Message":    "Twój jednorazowy kod logowania to: " + code,
-					"Link":       "#",
-					"ButtonText": code,
-					"TTL":        "5 minut",
-				})
-			} else {
-				go p.cfg.Emailer.Send(safeCtx, user.Email, "Kod logowania", "Twój kod to: "+code)
-			}
-
-			tempTokens, _ := GenerateTokensWithClaims(jwt.MapClaims{
-				"sub":  user.ID,
-				"type": "pre-auth",
-				"exp":  time.Now().Add(5 * time.Minute).Unix(),
-			})
-
-			return authRes{
-				Requires2FA:  true,
-				SessionToken: tempTokens.Access,
-			}, nil
+		if p.requiresSecondFactor(req.TrustedDeviceToken, user.ID) {
+			return p.sendMFAChallenge(safeCtx, user)
 		}
 
 		return p.issueTokens(safeCtx, user, req.TenantID)
@@ -382,6 +332,89 @@ func (p *Plugin) buildLogin() action.AnyAction {
 		Use(fail2ban.Fail2Ban[credentialsReq, authRes](p.bruteProtector, func(ctx context.Context, _ credentialsReq) string { return xctx.ClientIPFrom(ctx) })).
 		ConcurrencyLimit(p.cfg.LoginConcurrency).Timeout(p.cfg.LoginTimeout).
 		Route(thttp.POST("/auth/login")).Build()
+}
+
+func validLegacyLoginPassword(user *User, password string) bool {
+	hash := []byte("$2a$10$7EqJtq98hPqEX7fNZaFWoOh231v4fFkC6.2qg07aE3wS8jXkXW.K2")
+	if user != nil {
+		hash = user.Password
+	}
+	compareErr := bcrypt.CompareHashAndPassword(hash, []byte(password))
+	valid := 0
+	if compareErr == nil && user != nil {
+		valid = 1
+	}
+	return subtle.ConstantTimeByteEq(byte(valid), 0) != 1
+}
+
+func (p *Plugin) requiresSecondFactor(trustedDeviceToken, userID string) bool {
+	if len(p.cfg.MFAProviders) == 0 {
+		return false
+	}
+	enabled := true
+	if configured := os.Getenv("AUTH_MFA_REQUIRED"); configured != "" {
+		enabled = configured == "true"
+	} else if p.cfg.Env == "development" || p.cfg.Env == "dev" || p.cfg.DesktopMode {
+		enabled = false
+	}
+	if !enabled {
+		return false
+	}
+	if trustedDeviceToken == "" {
+		return true
+	}
+	token, err := VerifyToken(trustedDeviceToken)
+	if err != nil || token == nil {
+		return true
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	return !ok || claims["type"] != "trusted_device" || claims["sub"] != userID
+}
+
+func (p *Plugin) sendMFAChallenge(ctx context.Context, user *User) (authRes, error) {
+	upperBound := big.NewInt(1000000)
+	n, err := rand.Int(rand.Reader, upperBound)
+	if err != nil {
+		return authRes{}, xerr.Internal("Błąd generowania kodu 2FA", err)
+	}
+	code := fmt.Sprintf("%06d", n.Int64())
+	dbToken := user.ID + ":" + code
+	expiresAt := time.Now().Add(5 * time.Minute)
+	if storeErr := p.cfg.Store.CreateVerificationToken(ctx, user.ID, dbToken, expiresAt); storeErr != nil {
+		return authRes{}, xerr.Database("Błąd generowania sesji", storeErr)
+	}
+
+	if tmplMailer, ok := p.cfg.Emailer.(interface {
+		SendTemplate(context.Context, string, string, string, any) error
+	}); ok {
+		go func() {
+			if deliveryErr := tmplMailer.SendTemplate(ctx, user.Email, "Twój kod logowania", "auth", map[string]string{
+				templateTitle:   "Logowanie 2FA",
+				templateMessage: "Twój jednorazowy kod logowania to: " + code,
+				"Link":          "#",
+				templateButton:  code,
+				"TTL":           "5 minut",
+			}); deliveryErr != nil {
+				slog.ErrorContext(ctx, "MFA email delivery failed")
+			}
+		}()
+	} else {
+		go func() {
+			if deliveryErr := p.cfg.Emailer.Send(ctx, user.Email, "Kod logowania", "Twój kod to: "+code); deliveryErr != nil {
+				slog.ErrorContext(ctx, "MFA email delivery failed")
+			}
+		}()
+	}
+
+	tokens, err := GenerateTokensWithClaims(jwt.MapClaims{
+		"sub":  user.ID,
+		"type": "pre-auth",
+		"exp":  time.Now().Add(5 * time.Minute).Unix(),
+	})
+	if err != nil {
+		return authRes{}, xerr.Internal("Błąd generowania sesji 2FA", err)
+	}
+	return authRes{Requires2FA: true, SessionToken: tokens.Access}, nil
 }
 
 func (p *Plugin) buildLogin2FA() action.AnyAction {
@@ -410,7 +443,9 @@ func (p *Plugin) buildLogin2FA() action.AnyAction {
 			return authRes{}, xerr.Unauthorized("Nieprawidłowy lub wygasły kod.")
 		}
 
-		_ = p.cfg.Store.DeleteVerificationToken(safeCtx, dbToken)
+		if cleanupErr := p.cfg.Store.DeleteVerificationToken(safeCtx, dbToken); cleanupErr != nil {
+			slog.ErrorContext(safeCtx, "MFA verification token cleanup failed")
+		}
 
 		user, err := p.cfg.Store.GetUserByID(safeCtx, userID)
 		if err != nil || user == nil {
@@ -471,7 +506,9 @@ func (p *Plugin) buildRefresh() action.AnyAction {
 			return Token{}, xerr.Unauthorized("refresh token expired or revoked")
 		}
 
-		_ = p.cfg.Store.RevokeRefreshToken(safeCtx, tokenID)
+		if revokeErr := p.cfg.Store.RevokeRefreshToken(safeCtx, tokenID); revokeErr != nil {
+			return Token{}, xerr.Database("failed to revoke refresh token", revokeErr)
+		}
 
 		user, err := p.cfg.Store.GetUserByID(safeCtx, userID)
 		if err != nil || user == nil {
@@ -490,7 +527,9 @@ func (p *Plugin) buildLogout() action.AnyAction {
 			if tok, err := VerifyToken(req.RefreshToken); err == nil {
 				if claims, ok := tok.Claims.(jwt.MapClaims); ok {
 					if jti, _ := claims["jti"].(string); jti != "" {
-						_ = p.cfg.Store.RevokeRefreshToken(context.WithoutCancel(ctx), jti)
+						if revokeErr := p.cfg.Store.RevokeRefreshToken(context.WithoutCancel(ctx), jti); revokeErr != nil {
+							slog.ErrorContext(ctx, "refresh token revocation failed")
+						}
 					}
 				}
 			}
@@ -504,7 +543,11 @@ func (p *Plugin) buildForgotPassword() action.AnyAction {
 	return action.New("auth.forgot-password", func(ctx context.Context, req forgotPasswordReq) (*action.MessageRes, error) {
 		safeCtx := context.WithoutCancel(ctx)
 
-		user, _ := p.cfg.Store.GetUserByEmail(safeCtx, req.Email)
+		user, err := p.cfg.Store.GetUserByEmail(safeCtx, req.Email)
+		if err != nil {
+			slog.ErrorContext(safeCtx, "password reset account lookup failed")
+			return &action.MessageRes{Message: "If the email exists, a reset link was sent"}, nil //nolint:nilerr // Avoid exposing account lookup failures through the reset response.
+		}
 		if user == nil {
 			return &action.MessageRes{Message: "If the email exists, a reset link was sent"}, nil
 		}
@@ -519,15 +562,23 @@ func (p *Plugin) buildForgotPassword() action.AnyAction {
 			if m, ok := p.cfg.Emailer.(interface {
 				SendTemplate(context.Context, string, string, string, any) error
 			}); ok {
-				go m.SendTemplate(safeCtx, user.Email, "Zresetuj swoje hasło w systemie", "auth", map[string]string{
-					"Title":      "Resetowanie hasła",
-					"Message":    "Otrzymaliśmy prośbę o zresetowanie hasła dla Twojego konta. Kliknij w poniższy przycisk, aby ustawić nowe.",
-					"Link":       url,
-					"ButtonText": "Zresetuj hasło",
-					"TTL":        "1 godzinę",
-				})
+				go func() {
+					if err := m.SendTemplate(safeCtx, user.Email, "Zresetuj swoje hasło w systemie", "auth", map[string]string{
+						templateTitle:   "Resetowanie hasła",
+						templateMessage: "Otrzymaliśmy prośbę o zresetowanie hasła dla Twojego konta. Kliknij w poniższy przycisk, aby ustawić now.",
+						"Link":          url,
+						templateButton:  "Zresetuj hasło",
+						"TTL":           "1 godzinę",
+					}); err != nil {
+						slog.ErrorContext(safeCtx, "password reset email delivery failed")
+					}
+				}()
 			} else {
-				go p.cfg.Emailer.Send(safeCtx, user.Email, "Zresetuj hasło", "Kliknij tutaj: "+url)
+				go func() {
+					if err := p.cfg.Emailer.Send(safeCtx, user.Email, "Zresetuj hasło", "Kliknij tutaj: "+url); err != nil {
+						slog.ErrorContext(safeCtx, "password reset email delivery failed")
+					}
+				}()
 			}
 		}
 		return &action.MessageRes{Message: "If the email exists, a reset link was sent"}, nil
@@ -547,7 +598,10 @@ func (p *Plugin) buildResetPassword() action.AnyAction {
 			return nil, xerr.BadRequest("invalid or expired token")
 		}
 
-		user, _ := p.cfg.Store.GetUserByID(safeCtx, userID)
+		user, err := p.cfg.Store.GetUserByID(safeCtx, userID)
+		if err != nil {
+			return nil, xerr.Database("failed to load user", err)
+		}
 		if user == nil {
 			return nil, xerr.NotFound("user not found")
 		}
@@ -594,14 +648,18 @@ func (p *Plugin) buildConfirmEmail() action.AnyAction {
 		if !user.Verified {
 			user.Verified = true
 			user.UpdatedAt = time.Now()
-			if err := p.cfg.Store.UpdateUser(safeCtx, user); err != nil {
-				return authRes{}, xerr.Internal("failed to update user", err)
+			if updateErr := p.cfg.Store.UpdateUser(safeCtx, user); updateErr != nil {
+				return authRes{}, xerr.Internal("failed to update user", updateErr)
 			}
 			slog.InfoContext(safeCtx, "user_verified", "user_id", user.ID)
 		}
 
-		_ = p.cfg.Store.DeleteVerificationToken(safeCtx, req.Token)
-		_ = p.cfg.Store.RevokeAllUserTokens(safeCtx, user.ID)
+		if cleanupErr := p.cfg.Store.DeleteVerificationToken(safeCtx, req.Token); cleanupErr != nil {
+			slog.ErrorContext(safeCtx, "email verification token cleanup failed")
+		}
+		if revokeErr := p.cfg.Store.RevokeAllUserTokens(safeCtx, user.ID); revokeErr != nil {
+			slog.ErrorContext(safeCtx, "user token revocation failed")
+		}
 
 		res, err := p.issueTokens(safeCtx, user, "")
 		if err != nil {
@@ -614,8 +672,14 @@ func (p *Plugin) buildConfirmEmail() action.AnyAction {
 }
 
 func (p *Plugin) issueTokens(ctx context.Context, user *User, requestedTenantID string) (authRes, error) {
-	roles, _ := p.cfg.Store.GetUserRoles(ctx, user.ID)
-	features, _ := p.cfg.Store.GetUserFeatures(ctx, user.ID)
+	roles, err := p.cfg.Store.GetUserRoles(ctx, user.ID)
+	if err != nil {
+		return authRes{}, xerr.Database("failed to load user roles", err)
+	}
+	features, err := p.cfg.Store.GetUserFeatures(ctx, user.ID)
+	if err != nil {
+		return authRes{}, xerr.Database("failed to load user features", err)
+	}
 
 	tenantID, tenantRole, err := p.resolveTenant(ctx, user.ID, requestedTenantID)
 	if err != nil {
@@ -625,29 +689,33 @@ func (p *Plugin) issueTokens(ctx context.Context, user *User, requestedTenantID 
 		roles = append(roles, tenantRole)
 	}
 	if tenantID != "" {
-		if tf, err := p.cfg.Store.GetTenantFeatures(ctx, tenantID); err == nil {
-			features = append(features, tf...)
+		tenantFeatures, tenantErr := p.cfg.Store.GetTenantFeatures(ctx, tenantID)
+		if tenantErr != nil {
+			return authRes{}, xerr.Database("failed to load tenant features", tenantErr)
 		}
+		features = append(features, tenantFeatures...)
 	}
 
 	var perms []string
 	for _, r := range roles {
-		if rp, err := p.cfg.Store.GetRolePermissions(ctx, r); err == nil {
-			perms = append(perms, rp...)
+		rolePermissions, permissionErr := p.cfg.Store.GetRolePermissions(ctx, r)
+		if permissionErr != nil {
+			return authRes{}, xerr.Database("failed to load role permissions", permissionErr)
 		}
+		perms = append(perms, rolePermissions...)
 	}
 
 	tokenID := uuid.NewString()
 	expAccess := time.Now().Add(p.cfg.AccessTTL)
 	expRefresh := time.Now().Add(p.cfg.RefreshTTL)
 
-	if err := p.cfg.Store.CreateRefreshToken(ctx, user.ID, tokenID, expRefresh); err != nil {
-		return authRes{}, xerr.Database("failed to store refresh token", err)
+	if createErr := p.cfg.Store.CreateRefreshToken(ctx, user.ID, tokenID, expRefresh); createErr != nil {
+		return authRes{}, xerr.Database("failed to store refresh token", createErr)
 	}
 
 	claims := jwt.MapClaims{
 		"sub":                user.ID,
-		"email":              user.Email,
+		emailField:           user.Email,
 		"preferred_username": strings.Split(user.Email, "@")[0],
 		"ten":                tenantID,
 		"roles":              roles,
@@ -692,7 +760,7 @@ func (p *Plugin) resolveTenant(ctx context.Context, userID, requestedTenantID st
 	}
 
 	// Users without an explicit membership retain the framework's personal-tenant
-	// behaviour. Client-supplied tenant IDs still require a stored membership.
+	// behavior. Client-supplied tenant IDs still require a stored membership.
 	return userID, "", nil
 }
 
@@ -709,15 +777,19 @@ func (p *Plugin) sendVerification(ctx context.Context, user *User) {
 	if tmplMailer, ok := p.cfg.Emailer.(interface {
 		SendTemplate(context.Context, string, string, string, any) error
 	}); ok {
-		_ = tmplMailer.SendTemplate(ctx, user.Email, "Verify your email", "auth", map[string]string{
-			"Title":      "Welcome to the system!",
-			"Message":    "Please confirm your email address by clicking the button below.",
-			"Link":       url,
-			"ButtonText": "Confirm email",
-			"TTL":        "24 hours",
-		})
+		if err := tmplMailer.SendTemplate(ctx, user.Email, "Verify your email", "auth", map[string]string{
+			templateTitle:   "Welcome to the system!",
+			templateMessage: "Please confirm your email address by clicking the button below.",
+			"Link":          url,
+			templateButton:  "Confirm email",
+			"TTL":           "24 hours",
+		}); err != nil {
+			slog.ErrorContext(ctx, "verification email delivery failed")
+		}
 	} else {
-		_ = p.cfg.Emailer.Send(ctx, user.Email, "Verify your email", "Click here to verify: "+url)
+		if err := p.cfg.Emailer.Send(ctx, user.Email, "Verify your email", "Click here to verify: "+url); err != nil {
+			slog.ErrorContext(ctx, "verification email delivery failed")
+		}
 	}
 	slog.InfoContext(ctx, "verification_email_sent", "user_id", user.ID, "email", user.Email)
 }

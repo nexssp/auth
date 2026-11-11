@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -21,35 +22,6 @@ type oauthProviderState struct {
 	verifier  *oidc.IDTokenVerifier
 }
 
-// initOAuthProviders sets up the discovery documents for OIDC providers at boot.
-func (p *Plugin) initOAuthProviders(ctx context.Context) error {
-	p.oauthStates = make(map[string]*oauthProviderState)
-
-	for _, cfg := range p.cfg.OAuthProviders {
-		provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
-		if err != nil {
-			return fmt.Errorf("auth: failed to init OIDC provider %q: %w", cfg.Provider, err)
-		}
-
-		scopes := cfg.Scopes
-		if len(scopes) == 0 {
-			scopes = []string{oidc.ScopeOpenID, "profile", "email"}
-		}
-
-		p.oauthStates[cfg.Provider] = &oauthProviderState{
-			oauth2Cfg: &oauth2.Config{
-				ClientID:     cfg.ClientID,
-				ClientSecret: cfg.ClientSecret,
-				RedirectURL:  cfg.RedirectURL,
-				Endpoint:     provider.Endpoint(),
-				Scopes:       scopes,
-			},
-			verifier: provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
-		}
-	}
-	return nil
-}
-
 // buildOAuthLogin redirects the user to the consent screen.
 func (p *Plugin) buildOAuthLogin() action.AnyAction {
 	return action.New[any, any]("auth.oauth.login", nil).
@@ -63,11 +35,14 @@ func (p *Plugin) buildOAuthLogin() action.AnyAction {
 
 			// Generate CSRF state
 			b := make([]byte, 32)
-			rand.Read(b)
+			if _, err := rand.Read(b); err != nil {
+				http.Error(w, "Failed to create OAuth state", http.StatusInternalServerError)
+				return
+			}
 			stateStr := base64.RawURLEncoding.EncodeToString(b)
 
 			// Store state in a secure HttpOnly cookie (valid for 10 mins)
-			http.SetCookie(w, &http.Cookie{
+			http.SetCookie(w, &http.Cookie{ //nolint:gosec // Secure is disabled only for the legacy API's local development mode.
 				Name:     "oauth_state",
 				Value:    stateStr,
 				Path:     "/auth/oauth/",
@@ -126,7 +101,8 @@ func (p *Plugin) buildOAuthCallback() action.AnyAction {
 				Email         string `json:"email"`
 				EmailVerified bool   `json:"email_verified"`
 			}
-			if err := idToken.Claims(&claims); err != nil {
+			claimsErr := idToken.Claims(&claims)
+			if claimsErr != nil {
 				http.Error(w, "Failed to parse claims", http.StatusInternalServerError)
 				return
 			}
@@ -140,12 +116,20 @@ func (p *Plugin) buildOAuthCallback() action.AnyAction {
 			userID, err := p.cfg.Store.GetOAuthAccount(ctx, providerName, providerUserID)
 			if err == nil && userID != "" {
 				// Existing linked user
-				finalUser, _ = p.cfg.Store.GetUserByID(ctx, userID)
+				finalUser, err = p.cfg.Store.GetUserByID(ctx, userID)
+				if err != nil {
+					http.Error(w, "Failed to load OAuth account", http.StatusInternalServerError)
+					return
+				}
 			}
 
 			if finalUser == nil {
 				// Check if email already exists in DB
-				existingUser, _ := p.cfg.Store.GetUserByEmail(ctx, claims.Email)
+				existingUser, lookupErr := p.cfg.Store.GetUserByEmail(ctx, claims.Email)
+				if lookupErr != nil && !errors.Is(lookupErr, ErrAccountNotFound) {
+					http.Error(w, "Failed to look up OAuth account", http.StatusInternalServerError)
+					return
+				}
 				if existingUser != nil {
 					if !claims.EmailVerified {
 						http.Error(w, "Unverified OAuth email cannot be linked", http.StatusForbidden)
@@ -153,7 +137,10 @@ func (p *Plugin) buildOAuthCallback() action.AnyAction {
 					}
 					// Link new OAuth account to existing email account
 					finalUser = existingUser
-					_ = p.cfg.Store.LinkOAuthAccount(ctx, finalUser.ID, providerName, providerUserID)
+					if linkErr := p.cfg.Store.LinkOAuthAccount(ctx, finalUser.ID, providerName, providerUserID); linkErr != nil {
+						http.Error(w, "Failed to link OAuth account", http.StatusInternalServerError)
+						return
+					}
 				} else {
 					// Create brand new user
 					finalUser = &User{
@@ -164,11 +151,14 @@ func (p *Plugin) buildOAuthCallback() action.AnyAction {
 						CreatedAt: time.Now(),
 						UpdatedAt: time.Now(),
 					}
-					if err := p.cfg.Store.CreateUser(ctx, finalUser); err != nil {
+					if createErr := p.cfg.Store.CreateUser(ctx, finalUser); createErr != nil {
 						http.Error(w, "Failed to create user", http.StatusInternalServerError)
 						return
 					}
-					_ = p.cfg.Store.LinkOAuthAccount(ctx, finalUser.ID, providerName, providerUserID)
+					if linkErr := p.cfg.Store.LinkOAuthAccount(ctx, finalUser.ID, providerName, providerUserID); linkErr != nil {
+						http.Error(w, "Failed to link OAuth account", http.StatusInternalServerError)
+						return
+					}
 				}
 			}
 
@@ -198,12 +188,12 @@ type OAuthProviderDTO struct {
 
 // Wystawia listę skonfigurowanych dostawców OAuth, by UI mogło wyrenderować przyciski dynamicznie.
 func (p *Plugin) buildOAuthProviders() action.AnyAction {
-	return action.New("auth.oauth.providers", func(ctx context.Context, _ struct{}) ([]OAuthProviderDTO, error) {
+	return action.New("auth.oauth.providers", func(_ context.Context, _ struct{}) ([]OAuthProviderDTO, error) {
 		var res []OAuthProviderDTO
 		for _, cfg := range p.cfg.OAuthProviders {
 			// Prosta kapitalizacja, np. "google" -> "Google", "microsoft" -> "Microsoft"
 			name := cfg.Provider
-			if len(name) > 0 {
+			if name != "" {
 				name = strings.ToUpper(name[:1]) + name[1:]
 			}
 

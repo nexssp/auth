@@ -37,7 +37,7 @@ func VerifyPassword(password, encodedHash string) error {
 		return ErrInvalidPasswordHash
 	}
 	if _, err := bcrypt.Cost([]byte(encodedHash)); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidPasswordHash, err)
+		return fmt.Errorf("%w: %w", ErrInvalidPasswordHash, err)
 	}
 
 	err := bcrypt.CompareHashAndPassword([]byte(encodedHash), []byte(password))

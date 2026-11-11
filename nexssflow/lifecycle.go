@@ -28,7 +28,9 @@ func (sensitiveInput) MarshalJSON() ([]byte, error) { return json.Marshal("[REDA
 func (sensitiveInput) String() string               { return "[REDACTED]" }
 func (sensitiveInput) GoString() string             { return "[REDACTED]" }
 func (sensitiveInput) Format(state fmt.State, _ rune) {
-	_, _ = io.WriteString(state, "[REDACTED]")
+	if _, err := io.WriteString(state, "[REDACTED]"); err != nil {
+		return
+	}
 }
 func (sensitiveInput) LogValue() slog.Value { return slog.StringValue("[REDACTED]") }
 
@@ -76,9 +78,10 @@ type passwordForgotResponse struct {
 }
 
 type passwordResetRequest struct {
-	Token        sensitiveInput `json:"token"`
-	Password     sensitiveInput `json:"password"`
-	Confirmation sensitiveInput `json:"confirmation"`
+	Token          sensitiveInput `json:"token"`
+	Password       sensitiveInput `json:"password"`
+	Confirmation   sensitiveInput `json:"confirmation"`
+	TurnstileToken sensitiveInput `json:"turnstile_token"`
 }
 
 type passwordResetResponse struct {
@@ -172,7 +175,7 @@ func newPasswordForgotAction(service *auth.Service, boundary ActionBoundary) act
 }
 
 func newPasswordResetAction(service *auth.Service, boundary ActionBoundary) action.AnyAction {
-	return newLifecycleAction("auth.password_reset", "Consume a one-time password-reset token and revoke prior auth state", boundary, auth.BoundaryPasswordReset, func(passwordResetRequest) string { return "" }, false, func(ctx context.Context, request passwordResetRequest) (passwordResetResponse, error) {
+	return newLifecycleAction("auth.password_reset", "Consume a one-time password-reset token and revoke prior auth state", boundary, auth.BoundaryPasswordReset, func(request passwordResetRequest) string { return string(request.TurnstileToken) }, false, func(ctx context.Context, request passwordResetRequest) (passwordResetResponse, error) {
 		if err := service.ResetPassword(ctx, string(request.Token), string(request.Password), string(request.Confirmation)); err != nil {
 			return passwordResetResponse{}, safeServiceError(err)
 		}
@@ -226,6 +229,9 @@ func safeBoundaryError(err error) error {
 	}
 	if errors.Is(err, auth.ErrRateLimited) {
 		return xerr.TooManyRequests("Authentication request was not accepted")
+	}
+	if errors.Is(err, auth.ErrTurnstileUnavailable) {
+		return xerr.Unavailable("Authentication request was not accepted")
 	}
 	return xerr.Forbidden("Authentication request was not accepted")
 }

@@ -21,12 +21,12 @@ func TestGlobalConcurrencyLimiter(t *testing.T) {
 	// Block the handler until we release it
 	block := make(chan struct{})
 
-	act1 := action.New("test.1", func(ctx context.Context, _ struct{}) (string, error) {
+	act1 := action.New("test.1", func(_ context.Context, _ struct{}) (string, error) {
 		<-block
 		return "ok", nil
 	}).Add(plugin).Build()
 
-	act2 := action.New("test.2", func(ctx context.Context, _ struct{}) (string, error) {
+	act2 := action.New("test.2", func(_ context.Context, _ struct{}) (string, error) {
 		<-block
 		return "ok", nil
 	}).Add(plugin).Build()

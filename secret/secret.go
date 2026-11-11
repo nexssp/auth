@@ -13,6 +13,8 @@ import (
 
 var ErrSecretNotFound = errors.New("secret not found in environment or /run/secrets/")
 
+const runDir = string(filepath.Separator) + "run"
+
 // String wraps a sensitive value. Use Unwrap() to access the actual value.
 type String string
 
@@ -55,8 +57,8 @@ func Resolve(ctx context.Context, key string) (String, error) {
 		}
 
 		paths := []string{
-			filepath.Join("/run", "secrets", strings.ToLower(key)),
-			filepath.Join("/run", "secrets", key),
+			filepath.Join(runDir, "secrets", strings.ToLower(key)),
+			filepath.Join(runDir, "secrets", key),
 		}
 
 		for _, p := range paths {

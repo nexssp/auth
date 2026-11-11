@@ -1,6 +1,10 @@
 package auth_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"testing"
 	"time"
 
@@ -70,5 +74,35 @@ func TestJWT_CustomClaims(t *testing.T) {
 	parsed, err := auth.VerifyToken(tokens.Access)
 	if err != nil || !parsed.Valid {
 		t.Fatalf("failed to verify custom claims token: %v", err)
+	}
+}
+
+func TestJWTRejectsMismatchedKeysAndNonRS256Algorithm(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(&privateKey.PublicKey)})
+	otherPublicPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PUBLIC KEY", Bytes: x509.MarshalPKCS1PublicKey(&otherKey.PublicKey)})
+	if err := auth.InitKeys(privatePEM, publicPEM); err != nil {
+		t.Fatalf("InitKeys rejected matching 2048-bit keys: %v", err)
+	}
+	if err := auth.InitKeys(privatePEM, otherPublicPEM); err == nil {
+		t.Fatal("InitKeys accepted mismatched RSA key pair")
+	}
+
+	token, err := jwt.NewWithClaims(jwt.SigningMethodRS384, jwt.MapClaims{
+		"sub": "user-123", "exp": time.Now().Add(time.Minute).Unix(),
+	}).SignedString(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.VerifyToken(token); err == nil {
+		t.Fatal("VerifyToken accepted an RS384 token; only RS256 is allowed")
 	}
 }

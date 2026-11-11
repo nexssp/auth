@@ -17,14 +17,14 @@ type mockMutex struct {
 	unlocked atomic.Bool
 }
 
-func (m *mockMutex) TryLock(_ context.Context, key string, ttl time.Duration) (bool, error) {
+func (m *mockMutex) TryLock(_ context.Context, _ string, _ time.Duration) (bool, error) {
 	if m.lockFail {
 		return false, nil
 	}
 	return true, nil
 }
 
-func (m *mockMutex) Unlock(ctx context.Context, key string) error {
+func (m *mockMutex) Unlock(_ context.Context, _ string) error {
 	m.unlocked.Store(true)
 	return nil
 }
@@ -34,7 +34,7 @@ func TestExclusive_LockAcquired(t *testing.T) {
 	m := &mockMutex{}
 	var handlerCalled bool
 
-	act := action.New("test.locked", func(ctx context.Context, req string) (string, error) {
+	act := action.New("test.locked", func(_ context.Context, _ string) (string, error) {
 		handlerCalled = true
 		return "ok", nil
 	}).Use(dlock.Exclusive[string, string](m, time.Minute, func(req string) string { return req })).Build()
@@ -55,7 +55,7 @@ func TestExclusive_LockFailed(t *testing.T) {
 	t.Parallel()
 	m := &mockMutex{lockFail: true}
 
-	act := action.New("test.locked.fail", func(ctx context.Context, req string) (string, error) {
+	act := action.New("test.locked.fail", func(_ context.Context, _ string) (string, error) {
 		return "ok", nil
 	}).Use(dlock.Exclusive[string, string](m, time.Minute, func(req string) string { return req })).Build()
 

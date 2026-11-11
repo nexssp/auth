@@ -50,7 +50,7 @@ func (s *memoryStore) GetUserByEmail(_ context.Context, email string) (*User, er
 	if u, ok := s.users[email]; ok {
 		return &u, nil
 	}
-	return nil, nil
+	return nil, ErrAccountNotFound
 }
 
 func (s *memoryStore) GetUserByID(_ context.Context, id string) (*User, error) {
@@ -60,7 +60,7 @@ func (s *memoryStore) GetUserByID(_ context.Context, id string) (*User, error) {
 		u := s.users[email]
 		return &u, nil
 	}
-	return nil, nil
+	return nil, ErrAccountNotFound
 }
 
 func (s *memoryStore) CreateUser(_ context.Context, user *User) error {
@@ -177,27 +177,27 @@ func (s *memoryStore) RevokeAllUserTokens(_ context.Context, userID string) erro
 	return nil
 }
 
-func (s *memoryStore) CreateVerificationToken(ctx context.Context, u, t string, exp time.Time) error {
+func (s *memoryStore) CreateVerificationToken(_ context.Context, u, t string, exp time.Time) error {
 	return s.setToken(t, "verify", u, exp)
 }
 
-func (s *memoryStore) GetVerificationToken(ctx context.Context, t string) (string, error) {
+func (s *memoryStore) GetVerificationToken(_ context.Context, t string) (string, error) {
 	return s.getToken(t, "verify")
 }
 
-func (s *memoryStore) DeleteVerificationToken(ctx context.Context, t string) error {
+func (s *memoryStore) DeleteVerificationToken(_ context.Context, t string) error {
 	return s.delToken(t)
 }
 
-func (s *memoryStore) CreateResetToken(ctx context.Context, u, t string, exp time.Time) error {
+func (s *memoryStore) CreateResetToken(_ context.Context, u, t string, exp time.Time) error {
 	return s.setToken(t, "reset", u, exp)
 }
 
-func (s *memoryStore) GetResetToken(ctx context.Context, t string) (string, error) {
+func (s *memoryStore) GetResetToken(_ context.Context, t string) (string, error) {
 	return s.getToken(t, "reset")
 }
 
-func (s *memoryStore) DeleteResetToken(ctx context.Context, t string) error {
+func (s *memoryStore) DeleteResetToken(_ context.Context, t string) error {
 	return s.delToken(t)
 }
 

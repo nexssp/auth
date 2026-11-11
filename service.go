@@ -106,6 +106,8 @@ type HostPolicy interface {
 
 // AuthEmail is a notification event, not a rendered message. The host owns its
 // email templates, canonical links, sender identity, and delivery provider.
+//
+//nolint:revive // AuthEmail is the established exported package name and changing it breaks host integrations.
 type AuthEmail struct {
 	Kind      string
 	To        string
@@ -234,7 +236,7 @@ func NewService(config ServiceConfig) (*Service, error) {
 }
 
 func supportedOAuthProvider(name string) bool {
-	return name == "google" || name == "github" || name == "facebook" || name == "apple"
+	return name == "google" || name == "github" || name == "facebook" || name == providerApple
 }
 
 func (s *Service) verificationMode(ctx context.Context) (EmailVerificationMode, error) {
@@ -300,11 +302,12 @@ func (s *Service) AuthenticatePassword(ctx context.Context, identifier, password
 		}
 		return Account{}, fmt.Errorf("auth: find account: %w", err)
 	}
-	if err := VerifyPassword(password, account.PasswordHash); err != nil {
-		if errors.Is(err, ErrPasswordMismatch) || errors.Is(err, ErrUnsupportedPasswordHash) || errors.Is(err, ErrInvalidPasswordHash) {
+	verifyErr := VerifyPassword(password, account.PasswordHash)
+	if verifyErr != nil {
+		if errors.Is(verifyErr, ErrPasswordMismatch) || errors.Is(verifyErr, ErrUnsupportedPasswordHash) || errors.Is(verifyErr, ErrInvalidPasswordHash) {
 			return Account{}, ErrInvalidCredentials
 		}
-		return Account{}, fmt.Errorf("auth: verify password: %w", err)
+		return Account{}, fmt.Errorf("auth: verify password: %w", verifyErr)
 	}
 	mode, err := s.verificationMode(ctx)
 	if err != nil {
@@ -551,8 +554,9 @@ func (s *Service) BeginProviderLogin(ctx context.Context, providerName, redirect
 	started := s.config.Now()
 	expires := started.Add(OAuthStateTTL)
 	pending := PendingOAuthState{Provider: providerName, Nonce: nonce, Verifier: verifier, RedirectURL: redirectURL, LinkSubject: linkSubject, Registration: registration, DesktopState: desktopState, StartedAt: started, ExpiresAt: expires}
-	if err := s.config.OAuthStates.SaveOAuthState(ctx, TokenDigest(state), pending); err != nil {
-		return "", fmt.Errorf("auth: save OAuth state: %w", err)
+	saveErr := s.config.OAuthStates.SaveOAuthState(ctx, TokenDigest(state), pending)
+	if saveErr != nil {
+		return "", fmt.Errorf("auth: save OAuth state: %w", saveErr)
 	}
 	authorizationURL, err := provider.AuthorizationURL(ctx, state, nonce, verifier, redirectURL)
 	if err != nil {
@@ -571,6 +575,8 @@ func (s *Service) CompleteProviderLogin(ctx context.Context, providerName, state
 
 // CompleteProviderCallback returns enough server-side context for the host to
 // route browser success/errors and for desktop logins to finish the PKCE handoff.
+//
+//nolint:gocyclo // Keep the single-use state, identity, linking, and verification gates in one auditable transaction.
 func (s *Service) CompleteProviderCallback(ctx context.Context, providerName, state, code string) (ProviderCallbackResult, error) {
 	provider, ok := s.config.OAuthProviders[providerName]
 	if !ok || s.config.OAuthStates == nil {
@@ -608,15 +614,16 @@ func (s *Service) CompleteProviderCallback(ctx context.Context, providerName, st
 		identity.EmailVerified = false
 	}
 	if pending.LinkSubject != "" {
-		account, err := s.config.Accounts.FindByID(ctx, pending.LinkSubject)
-		if err != nil {
-			return result, err
+		account, findErr := s.config.Accounts.FindByID(ctx, pending.LinkSubject)
+		if findErr != nil {
+			return result, findErr
 		}
 		if identity.Email == "" || !constantTimeEqual(normalizeEmail(account.Email), identity.Email) {
 			return result, ErrOAuthEmailMismatch
 		}
-		if err := s.config.Accounts.LinkProviderIdentity(ctx, account.ID, providerName, identity.Subject, identity.Email); err != nil {
-			return result, fmt.Errorf("auth: link %s identity: %w", providerName, err)
+		linkErr := s.config.Accounts.LinkProviderIdentity(ctx, account.ID, providerName, identity.Subject, identity.Email)
+		if linkErr != nil {
+			return result, fmt.Errorf("auth: link %s identity: %w", providerName, linkErr)
 		}
 		account, err = s.enforceVerification(ctx, account)
 		if err != nil {
@@ -645,8 +652,9 @@ func (s *Service) CompleteProviderCallback(ctx context.Context, providerName, st
 		if s.config.PendingOAuthLinks == nil {
 			return result, ErrAccountLinkRequired
 		}
-		if err := s.config.PendingOAuthLinks.SavePendingOAuthLink(ctx, identity, s.config.Now().Add(OAuthStateTTL)); err != nil {
-			return result, fmt.Errorf("auth: save pending provider link: %w", err)
+		saveErr := s.config.PendingOAuthLinks.SavePendingOAuthLink(ctx, identity, s.config.Now().Add(OAuthStateTTL))
+		if saveErr != nil {
+			return result, fmt.Errorf("auth: save pending provider link: %w", saveErr)
 		}
 		return result, ErrAccountLinkRequired
 	}
@@ -673,8 +681,8 @@ func (s *Service) CompleteProviderCallback(ctx context.Context, providerName, st
 		return result, err
 	}
 	if !account.EmailVerified && mode != VerificationDisabled {
-		if err := s.sendVerification(ctx, account); err != nil {
-			return result, err
+		if sendErr := s.sendVerification(ctx, account); sendErr != nil {
+			return result, sendErr
 		}
 	}
 	if mode == VerificationRequired && !account.EmailVerified {
@@ -745,7 +753,7 @@ func validUsername(username string) bool {
 		return false
 	}
 	for _, r := range username {
-		if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-') {
+		if (r < 'A' || r > 'Z') && (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '.' && r != '-' {
 			return false
 		}
 	}
@@ -808,10 +816,10 @@ func (s *Service) IssueDesktopAuthCode(ctx context.Context, state string, accoun
 			return err
 		}
 		expires := s.config.Now().Add(DesktopAuthCodeTTL)
-		if err := s.config.DesktopAuth.CreateDesktopAuthCode(callbackCtx, code.Digest, DesktopAuthCode{
+		if storeErr := s.config.DesktopAuth.CreateDesktopAuthCode(callbackCtx, code.Digest, DesktopAuthCode{
 			Subject: account.ID, AuthVersion: account.AuthVersion, CodeChallenge: request.CodeChallenge, ExpiresAt: expires,
-		}); err != nil {
-			return err
+		}); storeErr != nil {
+			return storeErr
 		}
 		callbackURL, err = desktopCallbackURL(request.RedirectURI, code.Value, state)
 		return err
@@ -842,19 +850,19 @@ func (s *Service) ExchangeDesktopAuthCode(ctx context.Context, code, verifier st
 		if authCode.ExpiresAt.Unix() < s.config.Now().Unix() || len(authCode.CodeChallenge) != len(challenge) || subtle.ConstantTimeCompare([]byte(authCode.CodeChallenge), []byte(challenge)) != 1 {
 			return ErrInvalidDesktopAuth
 		}
-		account, err := s.config.Accounts.FindByID(callbackCtx, authCode.Subject)
-		if err != nil || account.AuthVersion != authCode.AuthVersion {
+		account, findErr := s.config.Accounts.FindByID(callbackCtx, authCode.Subject)
+		if findErr != nil || account.AuthVersion != authCode.AuthVersion {
 			return ErrInvalidDesktopAuth
 		}
-		token, err := NewOpaqueToken()
-		if err != nil {
-			return err
+		opaqueToken, tokenErr := NewOpaqueToken()
+		if tokenErr != nil {
+			return tokenErr
 		}
 		bearerExpiry = s.config.Now().Add(s.config.DesktopBearerLifetime)
-		if err := s.config.DesktopBearers.StoreDesktopBearer(callbackCtx, token.Digest, DesktopBearer{Subject: account.ID, AuthVersion: account.AuthVersion, ExpiresAt: bearerExpiry}); err != nil {
-			return err
+		if storeErr := s.config.DesktopBearers.StoreDesktopBearer(callbackCtx, opaqueToken.Digest, DesktopBearer{Subject: account.ID, AuthVersion: account.AuthVersion, ExpiresAt: bearerExpiry}); storeErr != nil {
+			return storeErr
 		}
-		bearerValue = token.Value
+		bearerValue = opaqueToken.Value
 		return nil
 	})
 	if err != nil || bearerValue == "" {

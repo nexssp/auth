@@ -2,8 +2,6 @@ package auth_test
 
 import (
 	"context"
-	"io"
-	"log"
 	"path/filepath"
 	"testing"
 	"time"
@@ -22,13 +20,14 @@ import (
 func setupAuthSuite(t *testing.T) (*testkit.Suite, *gorm.DB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	silentLogger := logger.New(log.New(io.Discard, "\r\n", log.LstdFlags), logger.Config{LogLevel: logger.Silent})
-	db, _ := gorm.Open(sqlite.Open(dbPath), &gorm.Config{Logger: silentLogger})
+	dbLogger := logger.Default.LogMode(logger.Silent)
+	db, _ := gorm.Open(sqlite.Open(dbPath), &gorm.Config{Logger: dbLogger})
 	store, _ := auth.NewGORMStore(db)
 
 	cfg := auth.Config{
 		Store:               store,
 		Emailer:             auth.NoopEmailer{},
+		Env:                 "test",
 		BaseURL:             "http://localhost",
 		AccessTTL:           15 * time.Minute,
 		RefreshTTL:          24 * time.Hour,
@@ -39,7 +38,7 @@ func setupAuthSuite(t *testing.T) (*testkit.Suite, *gorm.DB) {
 
 	plugin, _ := auth.New(cfg)
 
-	protectedAction := action.New("admin.dashboard", func(ctx context.Context, _ struct{}) (string, error) {
+	protectedAction := action.New("admin.dashboard", func(_ context.Context, _ struct{}) (string, error) {
 		return "welcome_admin", nil
 	}).RequireRole("admin").Route(thttp.GET("/api/admin")).Build()
 
@@ -48,6 +47,16 @@ func setupAuthSuite(t *testing.T) (*testkit.Suite, *gorm.DB) {
 	tr.Mount([]action.AnyAction{protectedAction})
 
 	return testkit.NewWithHandler(t, tr.Handler()), db
+}
+
+func TestLegacyPluginRequiresExplicitDevelopmentOrTestEnvironment(t *testing.T) {
+	for _, environment := range []string{"", "staging", "production"} {
+		t.Run(environment, func(t *testing.T) {
+			if _, err := auth.New(auth.Config{Env: environment}); err == nil {
+				t.Fatalf("auth.New accepted environment %q", environment)
+			}
+		})
+	}
 }
 
 func TestAuth_RegisterAndLogin(t *testing.T) {
@@ -181,7 +190,10 @@ func TestAuth_TenantMustBeMemberAtLoginAndRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify access token: %v", err)
 	}
-	claims := parsed.Claims.(jwt.MapClaims)
+	claims, ok := parsed.Claims.(jwt.MapClaims)
+	if !ok {
+		t.Fatalf("token claims type = %T, want jwt.MapClaims", parsed.Claims)
+	}
 	if got, _ := claims["ten"].(string); got != "tenant-alpha" {
 		t.Fatalf("access token tenant = %q, want tenant-alpha", got)
 	}

@@ -17,13 +17,13 @@ func TestFail2Ban_MemoryProtector(t *testing.T) {
 	// 2 failures allowed within 100ms window, 200ms lockout duration
 	protector := fail2ban.NewMemoryProtector(2, 100*time.Millisecond, 200*time.Millisecond)
 
-	act := action.New("login.attempt", func(ctx context.Context, req string) (string, error) {
+	act := action.New("login.attempt", func(_ context.Context, req string) (string, error) {
 		if req == "invalid" {
 			return "", xerr.Unauthorized("bad password")
 		}
 		return "logged_in", nil
 	}).
-		Use(fail2ban.Fail2Ban[string, string](protector, func(ctx context.Context, req string) string {
+		Use(fail2ban.Fail2Ban[string, string](protector, func(_ context.Context, _ string) string {
 			return "user-ip-127.0.0.1"
 		})).
 		Build()

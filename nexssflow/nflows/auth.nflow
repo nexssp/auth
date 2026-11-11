@@ -1,7 +1,8 @@
 # Host setup happens outside this file: build the auth.Service and request boundary
 # from deployment configuration, then attach trusted per-request auth/session state.
-# If enabled, the host boundary validates turnstile_token using its server-side
-# Turnstile secret. Never put environment secrets or challenge responses in source.
+# For public credential routes, wrap the host boundary with
+# NewTurnstileActionBoundary and DefaultTurnstileOperations. The host verifies
+# turnstile_token with its server-only secret; never put secrets or responses in source.
 @description "Importable host-configured auth REST routes"
 
 @schema AuthRegisterCredentials {
@@ -44,9 +45,10 @@
   Credentials AuthPasswordForgotCredentials `json:"credentials" validate:"required"`
 }
 @schema AuthPasswordResetCredentials {
-  Token        string `json:"token" validate:"required"`
-  Password     string `json:"password" validate:"required"`
-  Confirmation string `json:"confirmation" validate:"required"`
+	Token          string `json:"token" validate:"required"`
+	Password       string `json:"password" validate:"required"`
+	Confirmation   string `json:"confirmation" validate:"required"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 @schema AuthPasswordResetRequest {
   Credentials AuthPasswordResetCredentials `json:"credentials" validate:"required"`
@@ -139,7 +141,8 @@
   auth.password_reset @{
     token: .credentials.token,
     password: .credentials.password,
-    confirmation: .credentials.confirmation
+    confirmation: .credentials.confirmation,
+    turnstile_token: .credentials.turnstile_token
   }
 @end
 

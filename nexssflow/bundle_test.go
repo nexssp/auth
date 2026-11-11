@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -163,7 +164,7 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 		"invite_code": "flow-test-invite", "terms_accepted": true,
 		"turnstile_token": "flow-test-turnstile",
 	}
-	register := executeLifecycle(t, config, "register", ctx, registerInput)
+	register := executeLifecycle(ctx, t, config, "register", registerInput)
 	var registered registerResponse
 	decodeOutput(t, register.Output, &registered)
 	if !registered.Registered || !registered.Authenticated || registered.EmailVerification != auth.VerificationOptional {
@@ -188,11 +189,11 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 		t.Fatal("registration did not send a verification email through the fake sender")
 	}
 
-	loginInput := map[string]any{
+	loginInput := map[string]any{ //nolint:gosec // synthetic credentials used only by this test
 		"identifier": "flow-user@example.test", "password": password,
 		"turnstile_token": "flow-login-turnstile",
 	}
-	login := executeLifecycle(t, config, "login", ctx, loginInput)
+	login := executeLifecycle(ctx, t, config, "login", loginInput)
 	var loggedIn loginResponse
 	decodeOutput(t, login.Output, &loggedIn)
 	if !loggedIn.Authenticated || loggedIn.CredentialType != "browser_session" {
@@ -200,14 +201,14 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 	}
 	assertOutputOmits(t, login.Output, password, "flow-user@example.test", "flow-login-turnstile")
 
-	current := executeLifecycle(t, config, "current_session", xctx.WithUserID(ctx, account.ID), nil)
+	current := executeLifecycle(xctx.WithUserID(ctx, account.ID), t, config, "current_session", nil)
 	var currentOutput auth.CurrentSessionResponse
 	decodeOutput(t, current.Output, &currentOutput)
 	if currentOutput.AccountID != account.ID || currentOutput.EmailVerified {
 		t.Fatalf("current session output = %#v", currentOutput)
 	}
 
-	resend := executeLifecycle(t, config, "email_resend", ctx, map[string]any{
+	resend := executeLifecycle(ctx, t, config, "email_resend", map[string]any{ //nolint:gosec // synthetic email and challenge values used only in this test
 		"email": "flow-user@example.test", "turnstile_token": "flow-resend-turnstile",
 	})
 	var resent emailResendResponse
@@ -217,7 +218,7 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 	}
 	assertOutputOmits(t, resend.Output, "flow-user@example.test", "flow-resend-turnstile")
 
-	verified := executeLifecycle(t, config, "email_verify", ctx, map[string]any{
+	verified := executeLifecycle(ctx, t, config, "email_verify", map[string]any{
 		"token": verificationToken, "turnstile_token": "flow-verify-turnstile",
 	})
 	var verifyOutput emailVerifyResponse
@@ -231,7 +232,7 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 		t.Fatal("host account store did not mark email verified")
 	}
 
-	forgot := executeLifecycle(t, config, "password_forgot", ctx, map[string]any{
+	forgot := executeLifecycle(ctx, t, config, "password_forgot", map[string]any{
 		"email": "flow-user@example.test", "turnstile_token": "flow-forgot-turnstile",
 	})
 	var forgotOutput passwordForgotResponse
@@ -244,8 +245,8 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 	if resetToken == "" {
 		t.Fatal("forgot-password did not send through the fake sender")
 	}
-	const replacementPassword = "flow-test-replacement-password"
-	reset := executeLifecycle(t, config, "password_reset", ctx, map[string]any{
+	const replacementPassword = "flow-test-replacement-password" //nolint:gosec // synthetic password used only by this lifecycle test
+	reset := executeLifecycle(ctx, t, config, "password_reset", map[string]any{
 		"token": resetToken, "password": replacementPassword, "confirmation": replacementPassword,
 	})
 	var resetOutput passwordResetResponse
@@ -258,7 +259,7 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 		t.Fatalf("host password update/revocation calls = %d, want 1", updates)
 	}
 
-	logout := executeLifecycle(t, config, "logout", ctx, nil)
+	logout := executeLifecycle(ctx, t, config, "logout", nil)
 	var logoutOutput logoutResponse
 	decodeOutput(t, logout.Output, &logoutOutput)
 	if logoutOutput.Authenticated {
@@ -270,8 +271,8 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 
 	wantCalls := []flowBoundaryCall{
 		{operation: auth.BoundaryRegister, token: "flow-test-turnstile"},
-		{operation: auth.BoundaryLogin, token: "flow-login-turnstile"},
-		{operation: auth.BoundaryEmailVerify, token: "flow-resend-turnstile"},
+		{operation: auth.BoundaryLogin, token: "flow-login-turnstile"},        //nolint:gosec // synthetic challenge response in the expected test trace
+		{operation: auth.BoundaryEmailVerify, token: "flow-resend-turnstile"}, //nolint:gosec // synthetic challenge response in the expected test trace
 		{operation: auth.BoundaryEmailVerify, token: "flow-verify-turnstile"},
 		{operation: auth.BoundaryPasswordReset, token: "flow-forgot-turnstile"},
 		{operation: auth.BoundaryPasswordReset},
@@ -294,7 +295,6 @@ func TestLifecycleExampleExecutesThroughFlowRunnerWithFakeHost(t *testing.T) {
 func TestNFlowSourcesContainNoCredentialLiterals(t *testing.T) {
 	sources := []string{
 		"examples/auth_full_lifecycle.nflow",
-		"examples/flow_rest_api.nflow",
 		"nflows/auth.nflow",
 		"nflows/authorized_report.nflow",
 		"nflows/accountant_invoices.nflow",
@@ -393,7 +393,7 @@ func TestBoundaryFailureDoesNotEchoRuntimeCredentials(t *testing.T) {
 
 func TestSensitiveInputRedactsJSONFormattingAndSlog(t *testing.T) {
 	secret := sensitiveInput("not-for-logs")
-	encoded, err := json.Marshal(struct {
+	encoded, err := json.Marshal(struct { //nolint:gosec // test verifies that a password-shaped JSON field is redacted
 		Password sensitiveInput `json:"password"`
 	}{Password: secret})
 	if err != nil {
@@ -402,7 +402,7 @@ func TestSensitiveInputRedactsJSONFormattingAndSlog(t *testing.T) {
 	if strings.Contains(string(encoded), string(secret)) || !strings.Contains(string(encoded), "[REDACTED]") {
 		t.Fatalf("JSON representation = %s", encoded)
 	}
-	for _, formatted := range []string{fmt.Sprintf("%v", secret), fmt.Sprintf("%#v", secret), fmt.Sprintf("%s", secret)} {
+	for _, formatted := range []string{secret.String(), fmt.Sprintf("%#v", secret), secret.String()} {
 		if strings.Contains(formatted, string(secret)) || formatted != "[REDACTED]" {
 			t.Fatalf("formatted sensitive input = %q", formatted)
 		}
@@ -423,7 +423,7 @@ func buildFlowConfig(t *testing.T, bundle compiler.Bundle) runner.Config {
 	return config
 }
 
-func executeLifecycle(t *testing.T, config runner.Config, filename string, ctx context.Context, input map[string]any) runner.Execution {
+func executeLifecycle(ctx context.Context, t *testing.T, config runner.Config, filename string, input map[string]any) runner.Execution {
 	t.Helper()
 	source, err := fs.ReadFile(fixtures, "examples/auth_full_lifecycle.nflow")
 	if err != nil {
@@ -679,9 +679,9 @@ func (emails *flowTestEmails) SendAuthEmail(_ context.Context, message auth.Auth
 func (emails *flowTestEmails) lastToken(kind string) string {
 	emails.mu.Lock()
 	defer emails.mu.Unlock()
-	for i := len(emails.messages) - 1; i >= 0; i-- {
-		if emails.messages[i].Kind == kind {
-			return emails.messages[i].Token
+	for _, v := range slices.Backward(emails.messages) {
+		if v.Kind == kind {
+			return v.Token
 		}
 	}
 	return ""

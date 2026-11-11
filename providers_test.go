@@ -10,7 +10,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"maps"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -26,11 +28,11 @@ import (
 type rewriteTransport struct{ target *url.URL }
 
 func (transport rewriteTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	copy := request.Clone(request.Context())
+	cloned := request.Clone(request.Context())
 	parsed := *request.URL
 	parsed.Scheme, parsed.Host = transport.target.Scheme, transport.target.Host
-	copy.URL, copy.Host, copy.RequestURI = &parsed, transport.target.Host, ""
-	return http.DefaultTransport.RoundTrip(copy)
+	cloned.URL, cloned.Host, cloned.RequestURI = &parsed, transport.target.Host, ""
+	return http.DefaultTransport.RoundTrip(cloned)
 }
 
 type oidcFixture struct {
@@ -121,7 +123,7 @@ func (fixture *oidcFixture) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		rawToken, err := signedIDToken(signingKey, claims)
 		if err != nil {
 			fixture.t.Errorf("sign test ID token: %v", err)
-			http.Error(w, "sign error", 500)
+			http.Error(w, "sign error", http.StatusInternalServerError)
 			return
 		}
 		writeTestJSON(w, map[string]any{"access_token": "access-test", "token_type": "Bearer", "expires_in": 300, "id_token": rawToken})
@@ -169,11 +171,9 @@ func writeTestJSON(w http.ResponseWriter, value any) {
 }
 
 func cloneClaims(input jwt.MapClaims) jwt.MapClaims {
-	copy := jwt.MapClaims{}
-	for key, value := range input {
-		copy[key] = value
-	}
-	return copy
+	cloned := jwt.MapClaims{}
+	maps.Copy(cloned, input)
+	return cloned
 }
 
 func signedIDToken(key *rsa.PrivateKey, claims jwt.MapClaims) (string, error) {
@@ -196,7 +196,7 @@ func verifyAppleClientSecret(encoded string, publicKey *ecdsa.PrivateKey, team, 
 			return nil, fmt.Errorf("unexpected algorithm %s", token.Method.Alg())
 		}
 		if token.Header["kid"] != keyID {
-			return nil, fmt.Errorf("unexpected key ID")
+			return nil, errors.New("unexpected key ID")
 		}
 		return &publicKey.PublicKey, nil
 	})
@@ -205,7 +205,7 @@ func verifyAppleClientSecret(encoded string, publicKey *ecdsa.PrivateKey, team, 
 	}
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid || claims["iss"] != team || claims["sub"] != clientID || claims["aud"] != "https://appleid.apple.com" {
-		return fmt.Errorf("unexpected Apple client secret claims")
+		return errors.New("unexpected Apple client secret claims")
 	}
 	return nil
 }
@@ -371,11 +371,11 @@ func TestGitHubCallbackRequiresPKCEAndVerifiedPrimaryEmail(t *testing.T) {
 		switch r.URL.Path {
 		case "/login/oauth/access_token":
 			if err := r.ParseForm(); err != nil {
-				http.Error(w, "bad form", 400)
+				http.Error(w, "bad form", http.StatusBadRequest)
 				return
 			}
 			if r.Form.Get("code_verifier") != "github-code-verifier-01234567890123456789012345678901234567890" {
-				http.Error(w, "bad verifier", 400)
+				http.Error(w, "bad verifier", http.StatusBadRequest)
 				return
 			}
 			writeTestJSON(w, map[string]any{"access_token": "github-access", "token_type": "bearer", "expires_in": 3600})

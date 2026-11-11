@@ -142,7 +142,7 @@ func TestOneTimeTokenConcurrentConsumeHasOneWinner(t *testing.T) {
 	start := make(chan struct{})
 	results := make(chan error, attempts)
 	var applied atomic.Int32
-	for i := 0; i < attempts; i++ {
+	for range attempts {
 		go func() {
 			<-start
 			results <- service.Consume(context.Background(), value, now, func(context.Context, string) error {
@@ -155,7 +155,7 @@ func TestOneTimeTokenConcurrentConsumeHasOneWinner(t *testing.T) {
 
 	winners := 0
 	invalid := 0
-	for i := 0; i < attempts; i++ {
+	for range attempts {
 		err := <-results
 		switch {
 		case err == nil:

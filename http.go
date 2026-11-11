@@ -15,7 +15,13 @@ import (
 	"github.com/nexssp/transport"
 )
 
-const maxAuthRequestBytes = 16 << 10
+const (
+	maxAuthRequestBytes = 16 << 10
+	jsonErrorKey        = "error"
+	authenticatedKey    = "authenticated"
+	messageKey          = "message"
+	httpProviderApple   = "apple"
+)
 
 var (
 	ErrRequestDenied = errors.New("authentication request denied by host boundary")
@@ -126,7 +132,7 @@ func (handler *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := handler.service.StartBrowserSession(r.Context(), account); err != nil {
-		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not start a secure browser session."})
+		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{jsonErrorKey: "Could not start a secure browser session."})
 		return
 	}
 	if input.DesktopState != "" {
@@ -138,7 +144,7 @@ func (handler *HTTPHandler) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, callback, http.StatusSeeOther)
 		return
 	}
-	handler.writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "credential_type": "browser_session"})
+	handler.writeJSON(w, http.StatusOK, map[string]any{authenticatedKey: true, "credential_type": "browser_session"})
 }
 
 type registerRequest struct {
@@ -178,7 +184,7 @@ func (handler *HTTPHandler) register(w http.ResponseWriter, r *http.Request) {
 	authenticated := mode != VerificationRequired || account.EmailVerified
 	if authenticated {
 		if err := handler.service.StartBrowserSession(r.Context(), account); err != nil {
-			handler.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "The account was created, but a secure browser session could not be started."})
+			handler.writeJSON(w, http.StatusInternalServerError, map[string]string{jsonErrorKey: "The account was created, but a secure browser session could not be started."})
 			return
 		}
 	}
@@ -194,10 +200,10 @@ func (handler *HTTPHandler) logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := handler.service.EndBrowserSession(r.Context()); err != nil {
-		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not end the browser session."})
+		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{jsonErrorKey: "Could not end the browser session."})
 		return
 	}
-	handler.writeJSON(w, http.StatusOK, map[string]bool{"authenticated": false})
+	handler.writeJSON(w, http.StatusOK, map[string]bool{authenticatedKey: false})
 }
 
 type emailRequest struct {
@@ -216,16 +222,17 @@ func (handler *HTTPHandler) forgotPassword(w http.ResponseWriter, r *http.Reques
 	}
 	if err := handler.service.RequestPasswordReset(r.Context(), input.Email); err != nil {
 		// Keep the account-existence oracle closed, including delivery failures.
-		handler.writeJSON(w, http.StatusAccepted, map[string]string{"message": "If an account matches that email, a reset link will be sent."})
+		handler.writeJSON(w, http.StatusAccepted, map[string]string{messageKey: "If an account matches that email, a reset link will be sent."})
 		return
 	}
-	handler.writeJSON(w, http.StatusAccepted, map[string]string{"message": "If an account matches that email, a reset link will be sent."})
+	handler.writeJSON(w, http.StatusAccepted, map[string]string{messageKey: "If an account matches that email, a reset link will be sent."})
 }
 
 type resetRequest struct {
-	Token        string `json:"token"`
-	Password     string `json:"password"`
-	Confirmation string `json:"confirmation"`
+	Token          string `json:"token"`
+	Password       string `json:"password"`
+	Confirmation   string `json:"confirmation"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 func (handler *HTTPHandler) resetPassword(w http.ResponseWriter, r *http.Request) {
@@ -233,7 +240,7 @@ func (handler *HTTPHandler) resetPassword(w http.ResponseWriter, r *http.Request
 	if !handler.decodeJSON(w, r, &input) {
 		return
 	}
-	if !handler.authorize(w, r, BoundaryPasswordReset, "") {
+	if !handler.authorize(w, r, BoundaryPasswordReset, input.TurnstileToken) {
 		return
 	}
 	if err := handler.service.ResetPassword(r.Context(), input.Token, input.Password, input.Confirmation); err != nil {
@@ -267,10 +274,10 @@ func (handler *HTTPHandler) resendVerification(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if err := handler.service.RequestEmailVerification(r.Context(), input.Email); err != nil {
-		handler.writeJSON(w, http.StatusAccepted, map[string]string{"message": "If verification is available for that address, an email will be sent."})
+		handler.writeJSON(w, http.StatusAccepted, map[string]string{messageKey: "If verification is available for that address, an email will be sent."})
 		return
 	}
-	handler.writeJSON(w, http.StatusAccepted, map[string]string{"message": "If verification is available for that address, an email will be sent."})
+	handler.writeJSON(w, http.StatusAccepted, map[string]string{messageKey: "If verification is available for that address, an email will be sent."})
 }
 
 type oauthBeginRequest struct {
@@ -298,7 +305,7 @@ func (handler *HTTPHandler) beginOAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validProviderAuthorizationURL(provider, authorizationURL) {
-		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "The provider authorization URL is invalid."})
+		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{jsonErrorKey: "The provider authorization URL is invalid."})
 		return
 	}
 	http.Redirect(w, r, authorizationURL, http.StatusSeeOther)
@@ -309,14 +316,14 @@ func (handler *HTTPHandler) oauthCallback(w http.ResponseWriter, r *http.Request
 	provider, ok := handler.service.config.OAuthProviders[providerName]
 	if !ok || r.Method != provider.CallbackMethod() {
 		w.Header().Set("Allow", "GET, POST")
-		handler.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "The provider callback method is not allowed."})
+		handler.writeJSON(w, http.StatusMethodNotAllowed, map[string]string{jsonErrorKey: "The provider callback method is not allowed."})
 		return
 	}
-	state, code := "", ""
+	var state, code string
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
 		if err := r.ParseForm(); err != nil {
-			handler.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid provider callback."})
+			handler.writeJSON(w, http.StatusBadRequest, map[string]string{jsonErrorKey: "Invalid provider callback."})
 			return
 		}
 		state, code = r.Form.Get("state"), r.Form.Get("code")
@@ -338,7 +345,7 @@ func (handler *HTTPHandler) oauthCallback(w http.ResponseWriter, r *http.Request
 		if handler.redirectOAuthCallback(w, r, OAuthCallbackOutcome{Provider: providerName, AccountID: result.Account.ID, Registration: result.Registration, DesktopState: result.DesktopState, Err: err}) {
 			return
 		}
-		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not start a secure browser session."})
+		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{jsonErrorKey: "Could not start a secure browser session."})
 		return
 	}
 	if result.DesktopCallbackURL != "" {
@@ -348,7 +355,7 @@ func (handler *HTTPHandler) oauthCallback(w http.ResponseWriter, r *http.Request
 	if handler.redirectOAuthCallback(w, r, OAuthCallbackOutcome{Provider: providerName, AccountID: result.Account.ID, Registration: result.Registration}) {
 		return
 	}
-	handler.writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "credential_type": "browser_session", "provider": providerName})
+	handler.writeJSON(w, http.StatusOK, map[string]any{authenticatedKey: true, "credential_type": "browser_session", "provider": providerName})
 }
 
 func (handler *HTTPHandler) redirectOAuthCallback(w http.ResponseWriter, r *http.Request, outcome OAuthCallbackOutcome) bool {
@@ -357,14 +364,14 @@ func (handler *HTTPHandler) redirectOAuthCallback(w http.ResponseWriter, r *http
 	}
 	target, err := handler.oauthCallbackRedirector(r.Context(), outcome)
 	if err != nil {
-		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Could not complete provider sign-in."})
+		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{jsonErrorKey: "Could not complete provider sign-in."})
 		return true
 	}
 	if target == "" {
 		return false
 	}
 	if !validHostCallbackRedirect(target) {
-		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "The configured provider return URL is invalid."})
+		handler.writeJSON(w, http.StatusInternalServerError, map[string]string{jsonErrorKey: "The configured provider return URL is invalid."})
 		return true
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
@@ -430,8 +437,10 @@ func (handler *HTTPHandler) authorize(w http.ResponseWriter, r *http.Request, op
 		status := http.StatusForbidden
 		if errors.Is(err, ErrRateLimited) {
 			status = http.StatusTooManyRequests
+		} else if errors.Is(err, ErrTurnstileUnavailable) {
+			status = http.StatusServiceUnavailable
 		}
-		handler.writeJSON(w, status, map[string]string{"error": "Authentication request was not accepted."})
+		handler.writeJSON(w, status, map[string]string{jsonErrorKey: "Authentication request was not accepted."})
 		return false
 	}
 	return true
@@ -439,19 +448,19 @@ func (handler *HTTPHandler) authorize(w http.ResponseWriter, r *http.Request, op
 
 func (handler *HTTPHandler) decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	if r.Header.Get("Content-Type") == "" || !strings.EqualFold(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]), "application/json") {
-		handler.writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "Send a JSON request."})
+		handler.writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{jsonErrorKey: "Send a JSON request."})
 		return false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxAuthRequestBytes)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		handler.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid authentication request."})
+		handler.writeJSON(w, http.StatusBadRequest, map[string]string{jsonErrorKey: "Invalid authentication request."})
 		return false
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		handler.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid authentication request."})
+		handler.writeJSON(w, http.StatusBadRequest, map[string]string{jsonErrorKey: "Invalid authentication request."})
 		return false
 	}
 	return true
@@ -477,7 +486,7 @@ func (handler *HTTPHandler) writeServiceError(w http.ResponseWriter, err error) 
 	default:
 		appErr = xerr.Internal("Authentication service is temporarily unavailable.", err)
 	}
-	handler.writeJSON(w, transport.MapToHTTPStatus(appErr.Kind), map[string]string{"error": appErr.Message})
+	handler.writeJSON(w, transport.MapToHTTPStatus(appErr.Kind), map[string]string{jsonErrorKey: appErr.Message})
 }
 
 func (handler *HTTPHandler) writeJSON(w http.ResponseWriter, status int, value any) {
@@ -490,7 +499,9 @@ func (handler *HTTPHandler) writeJSON(w http.ResponseWriter, status int, value a
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = w.Write(bytes.TrimSuffix(buffer.Bytes(), []byte("\n")))
+	if _, err := w.Write(bytes.TrimSuffix(buffer.Bytes(), []byte("\n"))); err != nil {
+		return
+	}
 }
 
 func validHostCallbackRedirect(value string) bool {
@@ -521,11 +532,11 @@ func validProviderAuthorizationURL(provider, value string) bool {
 	switch provider {
 	case "google":
 		return host == "accounts.google.com" && path == "/o/oauth2/v2/auth"
-	case "github":
+	case providerGitHub:
 		return host == "github.com" && path == "/login/oauth/authorize"
-	case "facebook":
+	case providerFacebook:
 		return host == "www.facebook.com" && path == "/v27.0/dialog/oauth"
-	case "apple":
+	case httpProviderApple:
 		return host == "appleid.apple.com" && path == "/auth/authorize"
 	default:
 		return false

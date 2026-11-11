@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"time"
 
@@ -16,11 +17,18 @@ type EmailMFAProvider struct {
 	emailer Emailer
 }
 
+const (
+	emailField      = "email"
+	templateTitle   = "Title"
+	templateMessage = "Message"
+	templateButton  = "ButtonText"
+)
+
 func NewEmailMFAProvider(store Store, emailer Emailer) *EmailMFAProvider {
 	return &EmailMFAProvider{store: store, emailer: emailer}
 }
 
-func (p *EmailMFAProvider) ID() string   { return "email" }
+func (p *EmailMFAProvider) ID() string   { return emailField }
 func (p *EmailMFAProvider) Name() string { return "Wiadomość E-mail" }
 func (p *EmailMFAProvider) Type() string {
 	return "code" // UI powinno wyrenderować 6-cyfrowy input
@@ -28,8 +36,11 @@ func (p *EmailMFAProvider) Type() string {
 
 func (p *EmailMFAProvider) Challenge(ctx context.Context, user *User) (string, error) {
 	// 1. Generowanie 6 cyfr (kryptograficznie bezpieczne)
-	max := big.NewInt(1000000)
-	n, _ := rand.Int(rand.Reader, max)
+	upperBound := big.NewInt(1000000)
+	n, err := rand.Int(rand.Reader, upperBound)
+	if err != nil {
+		return "", xerr.Internal("Błąd generowania kodu 2FA", err)
+	}
 	code := fmt.Sprintf("%06d", n.Int64())
 
 	// 2. Zabezpieczenie przed kolizją (łączymy ID usera z kodem)
@@ -43,14 +54,22 @@ func (p *EmailMFAProvider) Challenge(ctx context.Context, user *User) (string, e
 	if tmplMailer, ok := p.emailer.(interface {
 		SendTemplate(context.Context, string, string, string, any) error
 	}); ok {
-		go tmplMailer.SendTemplate(context.WithoutCancel(ctx), user.Email, "Twój kod logowania", "auth", map[string]string{
-			"Title":      "Logowanie 2FA",
-			"Message":    "Twój jednorazowy kod logowania to: " + code,
-			"ButtonText": code,
-			"TTL":        "5 minut",
-		})
+		go func() {
+			if err := tmplMailer.SendTemplate(context.WithoutCancel(ctx), user.Email, "Twój kod logowania", "auth", map[string]string{
+				templateTitle:   "Logowanie 2FA",
+				templateMessage: "Twój jednorazowy kod logowania to: " + code,
+				templateButton:  code,
+				"TTL":           "5 minut",
+			}); err != nil {
+				slog.ErrorContext(ctx, "MFA email delivery failed")
+			}
+		}()
 	} else {
-		go p.emailer.Send(context.WithoutCancel(ctx), user.Email, "Kod logowania", "Twój kod to: "+code)
+		go func() {
+			if err := p.emailer.Send(context.WithoutCancel(ctx), user.Email, "Kod logowania", "Twój kod to: "+code); err != nil {
+				slog.ErrorContext(ctx, "MFA email delivery failed")
+			}
+		}()
 	}
 
 	// Maskowanie maila dla bezpieczeństwa (j***e@example.com)
@@ -65,7 +84,9 @@ func (p *EmailMFAProvider) Verify(ctx context.Context, user *User, input string)
 	}
 
 	// Sukces: Spalamy kod (One-Time Use)
-	_ = p.store.DeleteVerificationToken(ctx, dbToken)
+	if cleanupErr := p.store.DeleteVerificationToken(ctx, dbToken); cleanupErr != nil {
+		slog.ErrorContext(ctx, "MFA verification token cleanup failed")
+	}
 	return nil
 }
 

@@ -28,7 +28,11 @@ const (
 	facebookOIDCIssuer = "https://www.facebook.com"
 	facebookOIDCJWKS   = "https://www.facebook.com/.well-known/oauth/openid/jwks/"
 	facebookAuthURL    = "https://www.facebook.com/v27.0/dialog/oauth"
-	facebookTokenURL   = "https://graph.facebook.com/v27.0/oauth/access_token"
+	// These are public OAuth protocol endpoints, not credentials.
+	facebookTokenURL = "https://graph.facebook.com/v27.0/oauth/access_token" //nolint:gosec // public endpoint constant
+	providerGitHub   = "github"
+	providerFacebook = "facebook"
+	providerApple    = "apple"
 )
 
 // GoogleProviderConfig contains only host-supplied Google OAuth settings. The
@@ -99,7 +103,7 @@ func NewFacebookProvider(config FacebookProviderConfig) (OAuthProvider, error) {
 		ClientID: config.ClientID, SupportedSigningAlgs: []string{"RS256"},
 	})
 	return &oidcProvider{
-		name: "facebook", redirect: config.RedirectURL,
+		name: providerFacebook, redirect: config.RedirectURL,
 		config: oauth2.Config{
 			ClientID:    config.ClientID,
 			Endpoint:    oauth2.Endpoint{AuthURL: facebookAuthURL, TokenURL: facebookTokenURL},
@@ -133,7 +137,7 @@ func NewAppleProvider(ctx context.Context, config AppleProviderConfig) (OAuthPro
 	endpoint := provider.Endpoint()
 	endpoint.AuthStyle = oauth2.AuthStyleInParams
 	return &oidcProvider{
-		name: "apple", redirect: config.RedirectURL,
+		name: providerApple, redirect: config.RedirectURL,
 		config: oauth2.Config{
 			ClientID: config.ClientID, Endpoint: endpoint, RedirectURL: config.RedirectURL,
 			Scopes: []string{oidc.ScopeOpenID, "email"},
@@ -166,7 +170,7 @@ func (provider *oidcProvider) CallbackMethod() string {
 	return http.MethodGet
 }
 
-func (provider *oidcProvider) AuthorizationURL(ctx context.Context, state, nonce, verifier, redirectURL string) (string, error) {
+func (provider *oidcProvider) AuthorizationURL(_ context.Context, state, nonce, verifier, redirectURL string) (string, error) {
 	if !constantTimeEqual(provider.redirect, redirectURL) || state == "" || nonce == "" {
 		return "", ErrInvalidInput
 	}
@@ -183,6 +187,7 @@ func (provider *oidcProvider) AuthorizationURL(ctx context.Context, state, nonce
 	return provider.config.AuthCodeURL(state, options...), nil
 }
 
+//nolint:gocyclo // This linear callback validation keeps exchange, claims, and security checks auditable together.
 func (provider *oidcProvider) Complete(ctx context.Context, code, nonce, verifier, redirectURL string) (ProviderIdentity, error) {
 	if code == "" || len(code) > 4096 || hasControl(code) || nonce == "" || !constantTimeEqual(provider.redirect, redirectURL) {
 		return ProviderIdentity{}, ErrInvalidOAuthResponse
@@ -201,7 +206,7 @@ func (provider *oidcProvider) Complete(ctx context.Context, code, nonce, verifie
 	providerCtx := withProviderHTTPClient(ctx, provider.httpClient)
 	var rawIDToken string
 	var err error
-	if provider.name == "facebook" {
+	if provider.name == providerFacebook {
 		rawIDToken, err = provider.exchangeFacebookCode(providerCtx, code, verifier, redirectURL)
 	} else {
 		var token *oauth2.Token
@@ -252,14 +257,14 @@ func (provider *oidcProvider) exchangeFacebookCode(ctx context.Context, code, ve
 	query.Set("code", code)
 	query.Set("code_verifier", verifier)
 	endpoint.RawQuery = query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), http.NoBody) //nolint:gosec // endpoint is the provider's fixed token URL
 	if err != nil {
 		return "", ErrInvalidOAuthResponse
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
 	request.Header.Set("Pragma", "no-cache")
-	response, err := provider.httpClient.Do(request)
+	response, err := provider.httpClient.Do(request) //nolint:gosec // Endpoint is the fixed Facebook token URL, not user-controlled.
 	if err != nil {
 		// Do not return url.Error: Facebook's required GET URL contains the
 		// one-use code and verifier, which must not be copied into logs.
@@ -304,14 +309,14 @@ func NewGitHubProvider(config GitHubProviderConfig) (OAuthProvider, error) {
 	return &githubProvider{
 		config: oauth2.Config{
 			ClientID: config.ClientID, ClientSecret: config.ClientSecret, RedirectURL: config.RedirectURL,
-			Endpoint: oauth2.Endpoint{AuthURL: "https://github.com/login/oauth/authorize", TokenURL: "https://github.com/login/oauth/access_token"},
+			Endpoint: oauth2.Endpoint{AuthURL: "https://github.com/login/oauth/authorize", TokenURL: "https://github.com/login/oauth/access_token"}, //nolint:gosec // public OAuth endpoint constants
 			Scopes:   []string{"read:user", "user:email"},
 		},
 		httpClient: safeProviderHTTPClient(config.HTTPClient),
 	}, nil
 }
 
-func (provider *githubProvider) Name() string           { return "github" }
+func (provider *githubProvider) Name() string           { return providerGitHub }
 func (provider *githubProvider) CallbackMethod() string { return http.MethodGet }
 
 func (provider *githubProvider) AuthorizationURL(_ context.Context, state, nonce, verifier, redirectURL string) (string, error) {
@@ -345,9 +350,9 @@ func (provider *githubProvider) Complete(ctx context.Context, code, _, verifier,
 	var emails []githubEmail
 	for page := 1; page <= 5; page++ {
 		endpoint := "https://api.github.com/user/emails?per_page=100&page=" + strconv.Itoa(page)
-		entries, err := getGitHubJSON[[]githubEmail](providerCtx, client, endpoint)
-		if err != nil {
-			return ProviderIdentity{}, fmt.Errorf("read GitHub verified emails: %w", err)
+		entries, fetchErr := getGitHubJSON[[]githubEmail](providerCtx, client, endpoint)
+		if fetchErr != nil {
+			return ProviderIdentity{}, fmt.Errorf("read GitHub verified emails: %w", fetchErr)
 		}
 		emails = append(emails, entries...)
 		if len(entries) < 100 {
@@ -397,12 +402,12 @@ func verifiedGitHubIdentity(user githubUser, emails []githubEmail) (ProviderIden
 
 func getGitHubJSON[T any](ctx context.Context, client *http.Client, endpoint string) (T, error) {
 	var zero T
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return zero, err
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	request.Header.Set("X-Github-Api-Version", "2022-11-28")
 	request.Header.Set("User-Agent", "nexssp-auth")
 	response, err := client.Do(request)
 	if err != nil {
@@ -479,7 +484,7 @@ func parseApplePrivateKey(encoded []byte) (*ecdsa.PrivateKey, error) {
 }
 
 func validAppleSigningKey(key *ecdsa.PrivateKey) bool {
-	return key != nil && key.Curve != nil && key.Curve.Params().Name == "P-256" && key.D != nil
+	return key != nil && key.Curve != nil && key.Curve.Params().Name == "P-256"
 }
 
 func validateOAuthClient(clientID, clientSecret, redirectURL string) error {
@@ -499,17 +504,17 @@ func hasControl(value string) bool {
 }
 
 func safeProviderHTTPClient(client *http.Client) *http.Client {
-	copy := &http.Client{Timeout: 12 * time.Second}
+	clonedClient := &http.Client{Timeout: 12 * time.Second}
 	if client != nil {
-		*copy = *client
-		if copy.Timeout == 0 {
-			copy.Timeout = 12 * time.Second
+		*clonedClient = *client
+		if clonedClient.Timeout == 0 {
+			clonedClient.Timeout = 12 * time.Second
 		}
 	}
-	copy.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+	clonedClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return copy
+	return clonedClient
 }
 
 func withProviderHTTPClient(ctx context.Context, client *http.Client) context.Context {

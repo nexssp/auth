@@ -4,10 +4,10 @@
 # trusted execution. The boundary enforces caller, CSRF/origin, rate-limit, and
 # anti-abuse policy. This does not replace HTTP routes; OAuth and desktop remain
 # at the guarded HTTP/Transport boundary.
-# Load database, session-cookie, mail, OAuth, and optional Turnstile secrets from
-# the host deployment environment/secret manager before starting the Flow runner.
-# This Flow package reads none of those settings itself; Turnstile verification
-# belongs in the host ActionBoundary, not in this file.
+# Load database, session-cookie, mail, OAuth, and Turnstile settings from the host
+# environment/secret manager before starting a public Flow runner. Wrap the host
+# ActionBoundary with NewTurnstileActionBoundary and DefaultTurnstileOperations.
+# This Flow package reads no environment settings and never verifies tokens itself.
 @require github.com/nexssp/auth
 
 @description "Route protected runtime credentials through validated auth pipelines"
@@ -46,9 +46,10 @@
   Credentials PasswordForgotCredentials `json:"credentials" validate:"required"`
 }
 @schema PasswordResetCredentials {
-  Token        string `json:"token" validate:"required"`
-  Password     string `json:"password" validate:"required"`
-  Confirmation string `json:"confirmation" validate:"required"`
+	Token          string `json:"token" validate:"required"`
+	Password       string `json:"password" validate:"required"`
+	Confirmation   string `json:"confirmation" validate:"required"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 @schema PasswordResetRequest {
   Credentials PasswordResetCredentials `json:"credentials" validate:"required"`
@@ -135,7 +136,8 @@
   auth.password_reset @{
     token: .credentials.token,
     password: .credentials.password,
-    confirmation: .credentials.confirmation
+    confirmation: .credentials.confirmation,
+    turnstile_token: .credentials.turnstile_token
   }
 @end
 @pipeline auth_email_verify
