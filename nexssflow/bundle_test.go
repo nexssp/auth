@@ -14,12 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexssp/auth"
 	"github.com/nexssp/flow/compiler"
 	"github.com/nexssp/flow/native"
 	"github.com/nexssp/flow/runner"
 	"github.com/nexssp/kernel/action"
 	"github.com/nexssp/kernel/xctx"
+
+	"github.com/nexssp/auth"
 )
 
 func TestNewBundleRequiresBoundaryForCredentialActions(t *testing.T) {
@@ -442,7 +443,7 @@ func executeLifecycle(t *testing.T, config runner.Config, filename string, ctx c
 	return execution
 }
 
-func decodeOutput(t *testing.T, output any, target any) {
+func decodeOutput(t *testing.T, output, target any) {
 	t.Helper()
 	encoded, err := json.Marshal(output)
 	if err != nil {
@@ -570,6 +571,7 @@ func (store *flowTestAccounts) MarkEmailVerified(_ context.Context, id string) e
 func (*flowTestAccounts) FindByProviderIdentity(context.Context, string, string) (auth.Account, error) {
 	return auth.Account{}, auth.ErrAccountNotFound
 }
+
 func (*flowTestAccounts) LinkProviderIdentity(context.Context, string, string, string, string) error {
 	return errors.New("not used")
 }

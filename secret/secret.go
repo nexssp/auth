@@ -55,8 +55,8 @@ func Resolve(ctx context.Context, key string) (String, error) {
 		}
 
 		paths := []string{
-			filepath.Join("/run/secrets", strings.ToLower(key)),
-			filepath.Join("/run/secrets", key),
+			filepath.Join("/run", "secrets", strings.ToLower(key)),
+			filepath.Join("/run", "secrets", key),
 		}
 
 		for _, p := range paths {

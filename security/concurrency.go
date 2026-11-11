@@ -13,14 +13,14 @@ func NewConcurrencyLimiter(limit int32) action.AnyAction {
 
 	return action.New[any, any]("plugin.concurrency", nil).
 		AnyHook(action.AnyHook{
-			Before: func(ctx context.Context, req any, meta *action.Meta) (context.Context, error) {
+			Before: func(ctx context.Context, _ any, meta *action.Meta) (context.Context, error) {
 				if count.Add(1) > limit {
 					count.Add(-1)
 					return ctx, action.ErrConcurrencyLimit
 				}
 				return ctx, nil
 			},
-			After: func(ctx context.Context, req, res any, err error, meta *action.Meta) {
+			After: func(_ context.Context, req, res any, err error, meta *action.Meta) {
 				count.Add(-1)
 			},
 		}).

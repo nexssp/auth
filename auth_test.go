@@ -8,15 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexssp/auth"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/nexssp/kernel/action"
 	"github.com/nexssp/testkit"
 	"github.com/nexssp/transport/thttp"
-
-	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+
+	"github.com/nexssp/auth"
 )
 
 func setupAuthSuite(t *testing.T) (*testkit.Suite, *gorm.DB) {

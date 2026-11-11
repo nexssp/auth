@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexssp/auth/security/dlock"
 	"github.com/nexssp/kernel/action"
+
+	"github.com/nexssp/auth/security/dlock"
 )
 
 type mockMutex struct {
@@ -16,7 +17,7 @@ type mockMutex struct {
 	unlocked atomic.Bool
 }
 
-func (m *mockMutex) TryLock(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+func (m *mockMutex) TryLock(_ context.Context, key string, ttl time.Duration) (bool, error) {
 	if m.lockFail {
 		return false, nil
 	}

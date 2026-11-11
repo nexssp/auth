@@ -8,9 +8,10 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/nexssp/auth"
 	"github.com/nexssp/kernel/action"
 	"github.com/nexssp/kernel/xerr"
+
+	"github.com/nexssp/auth"
 )
 
 // ActionBoundary applies the host's caller, CSRF/origin, Turnstile, and
@@ -252,8 +253,10 @@ func isCancellation(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-var _ json.Marshaler = sensitiveInput("")
-var _ fmt.Stringer = sensitiveInput("")
-var _ fmt.GoStringer = sensitiveInput("")
-var _ fmt.Formatter = sensitiveInput("")
-var _ slog.LogValuer = sensitiveInput("")
+var (
+	_ json.Marshaler = sensitiveInput("")
+	_ fmt.Stringer   = sensitiveInput("")
+	_ fmt.GoStringer = sensitiveInput("")
+	_ fmt.Formatter  = sensitiveInput("")
+	_ slog.LogValuer = sensitiveInput("")
+)

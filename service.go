@@ -777,9 +777,11 @@ func validCallbackURL(value string) bool {
 	return scheme == "https" || (scheme == "http" && (host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1"))
 }
 
-var desktopStatePattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
-var pkceChallengePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43,128}$`)
-var opaqueTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+var (
+	desktopStatePattern  = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	pkceChallengePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43,128}$`)
+	opaqueTokenPattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+)
 
 func (s *Service) StartDesktopAuth(ctx context.Context, state, challenge, redirectURI string) error {
 	if s.config.DesktopAuth == nil || !desktopStatePattern.MatchString(state) || !pkceChallengePattern.MatchString(challenge) || !validDesktopRedirectURI(redirectURI) {

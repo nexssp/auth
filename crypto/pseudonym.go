@@ -8,7 +8,7 @@ import (
 
 // Pseudonymize generuje nieodwracalny, deterministyczny hash HMAC dla pól wyszukiwarkowych (np. NIP/Email).
 // Pozwala na wyszukiwanie rekordów w bazie bez konieczności przechowywania odszyfrowanych danych osobowych.
-func Pseudonymize(value string, salt string) string {
+func Pseudonymize(value, salt string) string {
 	if value == "" {
 		return ""
 	}

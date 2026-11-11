@@ -7,9 +7,10 @@ import (
 	"embed"
 	"errors"
 
-	"github.com/nexssp/auth"
 	"github.com/nexssp/flow/compiler"
 	"github.com/nexssp/kernel/action"
+
+	"github.com/nexssp/auth"
 )
 
 const (

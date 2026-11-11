@@ -32,7 +32,7 @@ func TestEncryptDecrypt(t *testing.T) {
 			}
 
 			// Encrypting anything (including empty) must produce a non‑empty ciphertext.
-			if len(encrypted) == 0 {
+			if encrypted == "" {
 				t.Errorf("EncryptString(%q) returned empty ciphertext", tt.input)
 				return
 			}

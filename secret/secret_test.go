@@ -3,7 +3,6 @@ package secret_test
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"testing"
 
 	"github.com/nexssp/auth/secret"
@@ -30,6 +29,7 @@ func TestSecretString_Masking(t *testing.T) {
 
 	// JSON Marshal should mask
 	cfg := Config{Password: s}
+	// #nosec G117 -- this test verifies that password values are masked during JSON serialization.
 	b, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -40,8 +40,7 @@ func TestSecretString_Masking(t *testing.T) {
 }
 
 func TestResolve_Env(t *testing.T) {
-	os.Setenv("TEST_SECRET_RESOLVE", "hello-world")
-	defer os.Unsetenv("TEST_SECRET_RESOLVE")
+	t.Setenv("TEST_SECRET_RESOLVE", "hello-world")
 
 	s, err := secret.Resolve(context.Background(), "TEST_SECRET_RESOLVE")
 	if err != nil {

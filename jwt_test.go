@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexssp/auth"
-
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/nexssp/auth"
 )
 
 func TestJWT_SigningAndVerification(t *testing.T) {

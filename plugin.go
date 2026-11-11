@@ -15,17 +15,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nexssp/auth/security/fail2ban"
-	"github.com/nexssp/auth/security/ratelimit"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/nexssp/kernel/action"
 	"github.com/nexssp/kernel/xctx"
 	"github.com/nexssp/kernel/xerr"
 	"github.com/nexssp/transport/thttp"
-
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/nexssp/auth/security/fail2ban"
+	"github.com/nexssp/auth/security/ratelimit"
 )
 
 type Plugin struct {
@@ -256,12 +256,12 @@ func (p *Plugin) buildRegister() action.AnyAction {
 			go p.sendVerification(safeCtx, user)
 		}
 
-			return &action.MessageRes{Message: "verification email sent"}, nil
-		}).
-			Description("Registers a new user and sends verification email").Tag("auth").
-			SuccessStatus(http.StatusCreated).
-			RateLimitDistributed(lim, xctx.ClientIPFrom).
-			ConcurrencyLimit(p.cfg.LoginConcurrency).Timeout(p.cfg.LoginTimeout).
+		return &action.MessageRes{Message: "verification email sent"}, nil
+	}).
+		Description("Registers a new user and sends verification email").Tag("auth").
+		SuccessStatus(http.StatusCreated).
+		RateLimitDistributed(lim, xctx.ClientIPFrom).
+		ConcurrencyLimit(p.cfg.LoginConcurrency).Timeout(p.cfg.LoginTimeout).
 		Route(thttp.POST("/auth/register")).Build()
 }
 

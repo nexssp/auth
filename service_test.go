@@ -198,11 +198,13 @@ func (store *memorySessions) EstablishBrowserSession(_ context.Context, session 
 	store.session, store.active = session, true
 	return nil
 }
+
 func (store *memorySessions) CurrentBrowserSession(context.Context) (BrowserSession, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	return store.session, store.active, nil
 }
+
 func (store *memorySessions) EndBrowserSession(context.Context) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -228,6 +230,7 @@ func (store *memoryTokens) InsertOneTimeToken(_ context.Context, digest, subject
 	store.items[digest] = memoryToken{subject: subject, expires: expires}
 	return nil
 }
+
 func (store *memoryTokens) ConsumeOneTimeToken(ctx context.Context, digest string, now time.Time, apply func(context.Context, string) error) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -241,6 +244,7 @@ func (store *memoryTokens) ConsumeOneTimeToken(ctx context.Context, digest strin
 	delete(store.items, digest)
 	return nil
 }
+
 func (store *memoryTokens) RevokeOneTimeToken(_ context.Context, digest string) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -260,6 +264,7 @@ func (sender *memoryEmails) SendAuthEmail(_ context.Context, message AuthEmail) 
 	sender.messages = append(sender.messages, message)
 	return sender.err
 }
+
 func (sender *memoryEmails) latest(kind string) (AuthEmail, bool) {
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
@@ -279,12 +284,14 @@ type memoryOAuthStates struct {
 func newMemoryOAuthStates() *memoryOAuthStates {
 	return &memoryOAuthStates{items: map[string]PendingOAuthState{}}
 }
+
 func (store *memoryOAuthStates) SaveOAuthState(_ context.Context, digest string, pending PendingOAuthState) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.items[digest] = pending
 	return nil
 }
+
 func (store *memoryOAuthStates) ConsumeOAuthState(_ context.Context, digest string, now time.Time) (PendingOAuthState, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -310,6 +317,7 @@ func (store *memoryPendingLinks) SavePendingOAuthLink(_ context.Context, identit
 	store.identity, store.expires, store.exists = identity, expires, true
 	return nil
 }
+
 func (store *memoryPendingLinks) ConsumePendingOAuthLink(ctx context.Context, now time.Time, apply func(context.Context, ProviderIdentity) error) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -335,6 +343,7 @@ type memoryDesktopAuth struct {
 func newMemoryDesktopAuth() *memoryDesktopAuth {
 	return &memoryDesktopAuth{requests: map[string]DesktopAuthRequest{}, codes: map[string]DesktopAuthCode{}}
 }
+
 func (store *memoryDesktopAuth) CreateDesktopAuthRequest(_ context.Context, digest string, request DesktopAuthRequest) error {
 	store.requestMu.Lock()
 	defer store.requestMu.Unlock()
@@ -344,12 +353,14 @@ func (store *memoryDesktopAuth) CreateDesktopAuthRequest(_ context.Context, dige
 	store.requests[digest] = request
 	return nil
 }
+
 func (store *memoryDesktopAuth) HasDesktopAuthRequest(_ context.Context, digest string, now time.Time) (bool, error) {
 	store.requestMu.Lock()
 	defer store.requestMu.Unlock()
 	request, ok := store.requests[digest]
 	return ok && request.ExpiresAt.Unix() >= now.Unix(), nil
 }
+
 func (store *memoryDesktopAuth) ConsumeDesktopAuthRequest(ctx context.Context, digest string, now time.Time, apply func(context.Context, DesktopAuthRequest) error) error {
 	store.requestMu.Lock()
 	defer store.requestMu.Unlock()
@@ -363,12 +374,14 @@ func (store *memoryDesktopAuth) ConsumeDesktopAuthRequest(ctx context.Context, d
 	delete(store.requests, digest)
 	return nil
 }
+
 func (store *memoryDesktopAuth) CreateDesktopAuthCode(_ context.Context, digest string, code DesktopAuthCode) error {
 	store.codeMu.Lock()
 	defer store.codeMu.Unlock()
 	store.codes[digest] = code
 	return nil
 }
+
 func (store *memoryDesktopAuth) ConsumeDesktopAuthCode(ctx context.Context, digest string, now time.Time, apply func(context.Context, DesktopAuthCode) error) error {
 	store.codeMu.Lock()
 	defer store.codeMu.Unlock()
@@ -395,12 +408,14 @@ func (store *memoryBearers) StoreDesktopBearer(_ context.Context, digest string,
 	store.items[digest] = bearer
 	return nil
 }
+
 func (store *memoryBearers) ResolveDesktopBearer(_ context.Context, digest string, now time.Time) (DesktopBearer, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	bearer, ok := store.items[digest]
 	return bearer, ok && bearer.ExpiresAt.Unix() >= now.Unix(), nil
 }
+
 func (store *memoryBearers) RevokeDesktopBearer(_ context.Context, digest string, _ time.Time) (bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -424,12 +439,14 @@ func (provider *fakeProvider) Name() string {
 	}
 	return "google"
 }
+
 func (provider *fakeProvider) CallbackMethod() string {
 	if provider.method == "" {
 		return http.MethodGet
 	}
 	return provider.method
 }
+
 func (provider *fakeProvider) AuthorizationURL(_ context.Context, state, _, _, redirect string) (string, error) {
 	if provider.authURL != "" {
 		return provider.authURL + "?state=" + url.QueryEscape(state), nil
@@ -440,6 +457,7 @@ func (provider *fakeProvider) AuthorizationURL(_ context.Context, state, _, _, r
 	}
 	return authorizationURL + "?state=" + url.QueryEscape(state) + "&redirect_uri=" + url.QueryEscape(redirect), nil
 }
+
 func (provider *fakeProvider) Complete(_ context.Context, _, _, _, _ string) (ProviderIdentity, error) {
 	provider.calls++
 	return provider.identity, provider.completeErr

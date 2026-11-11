@@ -1,7 +1,6 @@
 package roles_test
 
 import (
-	"os"
 	"sync/atomic"
 	"testing"
 
@@ -10,8 +9,7 @@ import (
 
 func TestRoles_RunSingle(t *testing.T) {
 	// Not t.Parallel() because it modifies os.Environ
-	os.Setenv("NEXSS_ROLE", "api")
-	defer os.Unsetenv("NEXSS_ROLE")
+	t.Setenv("NEXSS_ROLE", "api")
 
 	var apiCount, workerCount atomic.Int32
 
@@ -30,8 +28,7 @@ func TestRoles_RunSingle(t *testing.T) {
 }
 
 func TestRoles_RunAlias(t *testing.T) {
-	os.Setenv("NEXSS_ROLE", "monolith")
-	defer os.Unsetenv("NEXSS_ROLE")
+	t.Setenv("NEXSS_ROLE", "monolith")
 
 	var apiCount, workerCount, adminCount atomic.Int32
 

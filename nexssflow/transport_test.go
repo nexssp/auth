@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexssp/auth"
 	"github.com/nexssp/flow/compiler"
 	"github.com/nexssp/flow/native"
 	"github.com/nexssp/flow/runner"
@@ -20,6 +19,8 @@ import (
 	"github.com/nexssp/kernel/xctx"
 	transporthttp "github.com/nexssp/transport/thttp"
 	thttpflow "github.com/nexssp/transport/thttp/nexssflow"
+
+	"github.com/nexssp/auth"
 )
 
 func TestImportedAuthRoutesUseStandardTransportListener(t *testing.T) {

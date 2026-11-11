@@ -141,18 +141,21 @@ func (fixture *oidcFixture) httpClient() *http.Client {
 	}
 	return &http.Client{Transport: rewriteTransport{target: target}, Timeout: 5 * time.Second}
 }
+
 func (fixture *oidcFixture) authorizationEndpoint() string {
 	if strings.Contains(fixture.issuer, "accounts.google.com") {
 		return "https://accounts.google.com/o/oauth2/v2/auth"
 	}
 	return "https://appleid.apple.com/auth/authorize"
 }
+
 func (fixture *oidcFixture) tokenEndpoint() string {
 	if strings.Contains(fixture.issuer, "accounts.google.com") {
 		return "https://oauth2.googleapis.com/token"
 	}
 	return "https://appleid.apple.com/auth/token"
 }
+
 func (fixture *oidcFixture) jwksEndpoint() string {
 	if strings.Contains(fixture.issuer, "accounts.google.com") {
 		return "https://www.googleapis.com/oauth2/v3/certs"
@@ -164,6 +167,7 @@ func writeTestJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)
 }
+
 func cloneClaims(input jwt.MapClaims) jwt.MapClaims {
 	copy := jwt.MapClaims{}
 	for key, value := range input {
@@ -171,11 +175,13 @@ func cloneClaims(input jwt.MapClaims) jwt.MapClaims {
 	}
 	return copy
 }
+
 func signedIDToken(key *rsa.PrivateKey, claims jwt.MapClaims) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = "test-key-1"
 	return token.SignedString(key)
 }
+
 func rsaJWK(key *rsa.PublicKey) map[string]string {
 	return map[string]string{
 		"kty": "RSA", "use": "sig", "kid": "test-key-1", "alg": "RS256",
@@ -183,6 +189,7 @@ func rsaJWK(key *rsa.PublicKey) map[string]string {
 		"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
 	}
 }
+
 func verifyAppleClientSecret(encoded string, publicKey *ecdsa.PrivateKey, team, keyID, clientID string) error {
 	token, err := jwt.Parse(encoded, func(token *jwt.Token) (any, error) {
 		if token.Method != jwt.SigningMethodES256 {

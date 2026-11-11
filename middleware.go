@@ -8,10 +8,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/nexssp/kernel/xctx"
-
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/nexssp/kernel/xctx"
 )
 
 type JWTConfig struct {

@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexssp/auth/security"
 	"github.com/nexssp/kernel/action"
+
+	"github.com/nexssp/auth/security"
 )
 
 func TestGlobalConcurrencyLimiter(t *testing.T) {

@@ -5,9 +5,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nexssp/auth/security/fail2ban"
 	"github.com/nexssp/kernel/action"
 	"github.com/nexssp/kernel/xerr"
+
+	"github.com/nexssp/auth/security/fail2ban"
 )
 
 func TestFail2Ban_MemoryProtector(t *testing.T) {

@@ -324,7 +324,7 @@ func (provider *githubProvider) AuthorizationURL(_ context.Context, state, nonce
 	return provider.config.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier)), nil
 }
 
-func (provider *githubProvider) Complete(ctx context.Context, code, _ string, verifier, redirectURL string) (ProviderIdentity, error) {
+func (provider *githubProvider) Complete(ctx context.Context, code, _, verifier, redirectURL string) (ProviderIdentity, error) {
 	if code == "" || len(code) > 4096 || !constantTimeEqual(provider.config.RedirectURL, redirectURL) {
 		return ProviderIdentity{}, ErrInvalidOAuthResponse
 	}

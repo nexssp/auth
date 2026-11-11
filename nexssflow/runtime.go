@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/nexssp/auth"
 	"github.com/nexssp/kernel/action"
 	"github.com/nexssp/kernel/xerr"
+
+	"github.com/nexssp/auth"
 )
 
 type runtimeDependenciesKey struct{}

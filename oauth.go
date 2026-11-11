@@ -10,10 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/nexssp/kernel/action"
 	"github.com/nexssp/transport/thttp"
-
-	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 )
 

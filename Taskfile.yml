@@ -1,28 +1,115 @@
-# Nexss auth module tasks. Install Task: https://taskfile.dev/installation/
+# Nexss Auth
+# Copyright 2018-Present Marcin Polak and Contributors
+# SPDX-License-Identifier: Apache-2.0
+# Install Task: go install github.com/go-task/task/v3/cmd/task@latest
 version: '3'
+
 vars:
-  PKG: '{{.CLI_ARGS | default "./..."}}'
+  BASE:
+    sh: git merge-base HEAD origin/main 2>/dev/null || echo HEAD
+  CENTRAL_REF: 'main'
   GOTEST: '{{.GOTEST | default "go test"}}'
+
 tasks:
-  default: { cmds: [task --list --sort none], silent: true }
-  build:             { desc: "go build [./...]",                             cmds: ['go build {{.PKG}}'] }
-  test:              { desc: "{{.GOTEST}} -short [./...]",                       cmds: ['{{.GOTEST}} -short {{.PKG}}'] }
-  test:nocache:      { desc: "{{.GOTEST}} -count=1 [./...]",                     cmds: ['{{.GOTEST}} -count=1 {{.PKG}}'] }
-  test:race:         { desc: "{{.GOTEST}} -race -short [./...]",                 cmds: ['{{.GOTEST}} -race -short {{.PKG}}'] }
-  test:race:nocache: { desc: "{{.GOTEST}} -race -count=1 [./...]",               cmds: ['{{.GOTEST}} -race -count=1 {{.PKG}}'] }
-  test:cover:        { desc: "{{.GOTEST}} -coverprofile=coverage.out [./...]",   cmds: ['{{.GOTEST}} -coverprofile=coverage.out -short {{.PKG}}', 'go tool cover -func=coverage.out'] }
-  vet:               { desc: "go vet [./...]",                               cmds: ['go vet {{.PKG}}'] }
-  mod:tidy:check:    { desc: "go mod tidy -diff",                            cmds: ['go mod tidy -diff'] }
-  mod:verify:        { desc: "go mod verify",                                cmds: ['go mod verify'] }
+  default:
+    cmds: [task --list --sort none]
+    silent: true
+
+  build:
+    desc: "go build [./...]"
+    cmds: ['go build {{.CLI_ARGS | default "./..."}}']
+
+  tidy:
+    desc: "go mod tidy"
+    cmds: [go mod tidy]
+
+  clean:
+    desc: "Remove generated build and coverage files"
+    cmds: [rm -rf bin coverage.out]
+
+  test:
+    desc: "{{.GOTEST}} -short [./...]"
+    cmds: ['{{.GOTEST}} -short {{.CLI_ARGS | default "./..."}}']
+
+  test:nocache:
+    desc: "{{.GOTEST}} -count=1 [./...]"
+    cmds: ['{{.GOTEST}} -count=1 {{.CLI_ARGS | default "./..."}}']
+
+  test:race:
+    desc: "{{.GOTEST}} -race -short [./...]"
+    cmds: ['{{.GOTEST}} -race -short {{.CLI_ARGS | default "./..."}}']
+
+  test:race:nocache:
+    desc: "{{.GOTEST}} -race -count=1 [./...]"
+    cmds: ['{{.GOTEST}} -race -count=1 {{.CLI_ARGS | default "./..."}}']
+
+  test:cover:
+    desc: "{{.GOTEST}} -coverprofile=coverage.out [./...]"
+    cmds:
+      - '{{.GOTEST}} -coverprofile=coverage.out -short {{.CLI_ARGS | default "./..."}}'
+      - go tool cover -func=coverage.out
+
+  bench:
+    desc: "{{.GOTEST}} -run='^$' -bench=. -benchmem [./...]"
+    cmds: ["{{.GOTEST}} -run='^$' -bench=. -benchmem {{.CLI_ARGS | default \"./...\"}}"]
+
+  vet:
+    desc: "go vet [./...]"
+    cmds: ['go vet {{.CLI_ARGS | default "./..."}}']
+
+  mod:tidy:check:
+    desc: "go mod tidy -diff"
+    cmds: [go mod tidy -diff]
+
+  mod:verify:
+    desc: "go mod verify"
+    cmds: [go mod verify]
+
+  fmt:
+    desc: "Format Go source with golangci-lint"
+    cmds: [golangci-lint fmt]
+
+  lint:
+    desc: "golangci-lint run [./...]"
+    cmds: ['golangci-lint run {{.CLI_ARGS | default "./..."}}']
+
+  lint:new:
+    desc: 'golangci-lint run --new-from-rev="BASE" [./...]'
+    cmds: ['golangci-lint run --new-from-rev="{{.BASE}}" {{.CLI_ARGS | default "./..."}}']
+
+  lint:fix:
+    desc: 'golangci-lint run --fix --new-from-rev="BASE" [./...]'
+    cmds: ['golangci-lint run --fix --new-from-rev="{{.BASE}}" {{.CLI_ARGS | default "./..."}}']
+
+  vuln:
+    desc: "govulncheck -show=version [./...]"
+    cmds: ['govulncheck -show=version {{.CLI_ARGS | default "./..."}}']
+
+  pre-commit:
+    desc: "[lint:new, test]"
+    deps: [lint:new, test]
+
+  pre-push:
+    desc: "[lint, test:race]"
+    deps: [lint, test:race]
+
   ci:
-    desc: "[specs, lint, test:race:nocache, vuln] (parallel + failfast)"
-    deps: [specs, lint, test:race:nocache, vuln]
+    desc: "[lint, test:race:nocache, vuln]"
+    deps: [lint, test:race:nocache, vuln]
     output: prefixed
 
-  tools:     { desc: "go install -> gotest.tools/gotestsum@latest golang.org/x/vuln/cmd/govulncheck@latest",  cmds: ["go install gotest.tools/gotestsum@latest", "go install golang.org/x/vuln/cmd/govulncheck@latest"] }
-  setup: { desc: "[setup:files, tools]", deps: [setup:files, tools] }
+  tools:
+    desc: "Install gotestsum and govulncheck"
+    cmds:
+      - go install gotest.tools/gotestsum@latest
+      - go install golang.org/x/vuln/cmd/govulncheck@latest
+
+  setup:
+    desc: "[setup:files, tools]"
+    deps: [setup:files, tools]
+
   setup:files:
-    desc: "Fetch missing repo templates (LICENSE, .gitignore, configs...)"
+    desc: "Fetch missing shared repository templates"
     cmds:
       - |
         for f in LICENSE NOTICE .gitattributes .gitignore .golangci.yml .pre-commit-config.yaml; do

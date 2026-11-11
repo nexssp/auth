@@ -33,7 +33,7 @@ func NewMemoryLimiter(rps float64, burst int) Limiter {
 	}
 }
 
-func (l *memoryLimiter) Allow(ctx context.Context, key string) (bool, error) {
+func (l *memoryLimiter) Allow(_ context.Context, key string) (bool, error) {
 	if key == "" {
 		key = "global"
 	}
