@@ -31,6 +31,8 @@ type tokenEntry struct {
 	expiry time.Time
 }
 
+// NewMemoryStore returns an in-memory implementation of the legacy Store API.
+// It does not implement the storage interfaces required by Service.
 func NewMemoryStore() Store {
 	return &memoryStore{
 		users:   make(map[string]User),

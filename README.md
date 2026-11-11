@@ -12,11 +12,11 @@
 - Google, GitHub, Apple, and Facebook provider adapters. Facebook uses a manually built OIDC/PKCE flow that Meta currently labels as testing; see [provider limitations](PROVIDERS.md).
 - Explicit account linking: matching email alone never links a provider identity.
 - Guarded `net/http` routes, the `auth.current_session` Kernel action, Transport route bindings, and an explicitly registered `nexssflow` bundle.
-- Eight importable Flow routes in [`nexssflow/nflows/auth.nflow`](nexssflow/nflows/auth.nflow). The host supplies per-request auth dependencies, trusted identity, and the HTTP request/response exchange; see the [Flow integration guide](nexssflow/README.md).
+- Eight importable Flow routes in [`nexssflow/nflows/auth.nflow`](nexssflow/nflows/auth.nflow). Flow hosts supply per-request auth dependencies, trusted identity, and the HTTP request/response exchange; the raw `HTTPHandler` attaches its exchange automatically. See the [Flow integration guide](nexssflow/README.md).
 
 ## Host responsibilities
 
-The host must supply account persistence and transaction guarantees; registration and email-verification policy; email templates and canonical links; session and cookie issuance; CSRF/origin checks; trusted request identity; rate limiting; OAuth provider configuration and fixed callback URLs; and application authorization. The library does not grant tenant, workspace, project, or resource permissions. Hosts must authorize each such access from trusted server-side identity and policy. See [host integration](HOST_INTEGRATION.md).
+The host must supply account persistence and transaction guarantees; registration and email-verification policy; email templates and canonical links; session and cookie issuance; CSRF/origin checks; trusted request identity; rate-limit thresholds and trusted caller-key derivation (the package provides a reusable rate-limited `RequestBoundary` decorator); OAuth provider configuration and fixed callback URLs; and application authorization. The library does not grant tenant, workspace, project, or resource permissions. Hosts must authorize each such access from trusted server-side identity and policy. See [host integration](HOST_INTEGRATION.md).
 
 For public browser-facing auth, use the Turnstile-protected constructor and configure a server-side verifier. `NewHTTPHandler` and the Flow bundle's lower-level boundary constructors remain available when the host intentionally supplies an equivalent anti-abuse check itself; omitting both is not a secure public deployment.
 

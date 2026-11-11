@@ -1,4 +1,4 @@
-// Package auth provides highly scalable authentication, authorisation, and multi-tenancy.
+// Legacy identity, tenancy, token, and provider models retained for compatibility.
 package auth
 
 import (
@@ -40,7 +40,11 @@ type OAuthConfig struct {
 // Store Contract
 // ---------------------------------------------------------------------
 
-// Store defines persistence operations. Can be implemented by GORM, raw SQL, or Memory.
+// Store defines the persistence surface for the legacy Plugin. It combines
+// identity, token, provider, role, feature, and tenancy operations; it is not the
+// storage contract used by Service and does not provide its atomicity guarantees.
+//
+// Deprecated: Implement the storage interfaces needed by Service for new hosts.
 //
 //nolint:interfacebloat // Store is a legacy compatibility contract spanning the plugin subsystems.
 type Store interface {

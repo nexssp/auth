@@ -5,9 +5,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/nexssp/testkit"
 )
 
 func TestJWTMiddleware_PublicPathMatchingIsExplicit(t *testing.T) {
@@ -52,5 +54,49 @@ func TestJWTMiddlewareDoesNotAcceptQueryToken(t *testing.T) {
 	protected.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("query-string token returned status %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestJWTMiddlewareMissingVerifierFailsClosed(t *testing.T) {
+	nextCalled := false
+	handler := JWTMiddleware(JWTConfig{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	testkit.NewWithHandler(t, handler).
+		GET("/private").
+		WithBearerToken("opaque-token").
+		Do().
+		ExpectStatus(http.StatusServiceUnavailable)
+	if nextCalled {
+		t.Fatal("protected handler ran without a configured token verifier")
+	}
+}
+
+func TestJWTMiddlewareBoundsRequestIDAndAcceptsCaseInsensitiveBearer(t *testing.T) {
+	const expectedValue = "test-value"
+	var verified string
+	handler := JWTMiddleware(JWTConfig{
+		VerifyFn: func(_ context.Context, got string) (jwt.MapClaims, error) {
+			verified = got
+			return jwt.MapClaims{"sub": "user-1"}, nil
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	requestID := strings.Repeat("x", 129)
+	response := testkit.NewWithHandler(t, handler).
+		GET("/private").
+		WithHeader("Authorization", "bEaReR "+expectedValue).
+		WithHeader("X-Request-ID", requestID).
+		Do().
+		ExpectStatus(http.StatusNoContent)
+	if verified != expectedValue {
+		t.Fatalf("verified value = %q, want %q", verified, expectedValue)
+	}
+	if got := response.Header("X-Request-ID"); got == requestID || len(got) != 36 {
+		t.Fatalf("response request ID = %q, want generated UUID instead of oversized input", got)
 	}
 }

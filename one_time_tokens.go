@@ -12,6 +12,9 @@ var (
 	ErrInvalidOneTimeToken = errors.New("invalid, expired, or consumed one-time token")
 	// ErrOneTimeTokenStoreUnavailable indicates that no host store was supplied.
 	ErrOneTimeTokenStoreUnavailable = errors.New("one-time token store is unavailable")
+	// ErrOneTimeTokenRevokerRequired indicates that email-backed token delivery
+	// needs a store capable of revoking credentials when notification fails.
+	ErrOneTimeTokenRevokerRequired = errors.New("email-backed one-time token store must support revocation")
 )
 
 // OneTimeTokenStore is the host persistence seam. Bind each instance to a
@@ -29,8 +32,8 @@ type OneTimeTokenStore interface {
 	ConsumeOneTimeToken(ctx context.Context, digest string, now time.Time, apply func(callbackCtx context.Context, subject string) error) error
 }
 
-// OneTimeTokenRevoker is an optional capability for removing a token when its
-// email notification failed. Host stores may implement it alongside the atomic
+// OneTimeTokenRevoker removes a token when its email notification fails. A store
+// paired with an EmailSender in Service must implement it alongside the atomic
 // consume contract.
 type OneTimeTokenRevoker interface {
 	RevokeOneTimeToken(ctx context.Context, digest string) error

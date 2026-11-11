@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nexssp/testkit"
 )
 
 const testPassword = "long-enough-test-password"
@@ -212,6 +214,23 @@ func (store *memorySessions) EndBrowserSession(context.Context) error {
 	store.active = false
 	store.session = BrowserSession{}
 	return nil
+}
+
+type exchangeBrowserSessions struct {
+	memorySessions
+	requestMethod string
+	requestPath   string
+}
+
+func (store *exchangeBrowserSessions) EstablishBrowserSession(ctx context.Context, session BrowserSession) error {
+	exchange, ok := HTTPExchangeFromContext(ctx)
+	if !ok {
+		return errors.New("host HTTP exchange is unavailable")
+	}
+	store.requestMethod = exchange.Request.Method
+	store.requestPath = exchange.Request.URL.Path
+	http.SetCookie(exchange.Response, &http.Cookie{Name: "auth_session", Value: "test-session", Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode})
+	return store.memorySessions.EstablishBrowserSession(ctx, session)
 }
 
 type memoryTokens struct {
@@ -963,6 +982,44 @@ func TestHTTPHandlerRequiresHostBoundaryAndPreservesBrowserSessionLogin(t *testi
 	}
 }
 
+func TestHTTPHandlerAttachesExchangeForBrowserSessionHost(t *testing.T) {
+	h := newServiceHarness(t, VerificationDisabled, nil)
+	account := h.accounts.seedPassword(t, "exchange@example.test", "exchange-user", true)
+	sessions := &exchangeBrowserSessions{}
+	h.service.config.BrowserSessions = sessions
+	handler, err := NewHTTPHandler(HTTPConfig{Service: h.service, Boundary: &fakeBoundary{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := testkit.NewWithHandler(t, handler).
+		POST("/auth/login", map[string]string{"identifier": account.Email, "password": testPassword}).
+		Do().
+		ExpectStatus(http.StatusOK).
+		ExpectHeader("Set-Cookie", "auth_session=test-session; Path=/; HttpOnly; Secure; SameSite=Lax")
+	if sessions.requestMethod != http.MethodPost || sessions.requestPath != "/auth/login" {
+		t.Fatalf("host session exchange = %s %s, want POST /auth/login", sessions.requestMethod, sessions.requestPath)
+	}
+	if !strings.Contains(response.BodyString(), `"credential_type":"browser_session"`) {
+		t.Fatalf("login body = %s, want browser-session response", response.BodyString())
+	}
+}
+
+func TestHTTPHandlerAuthorizesOAuthCallbackBeforeProviderValidation(t *testing.T) {
+	h := newServiceHarness(t, VerificationDisabled, nil)
+	boundary := &fakeBoundary{}
+	handler, err := NewHTTPHandler(HTTPConfig{Service: h.service, Boundary: boundary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	testkit.NewWithHandler(t, handler).
+		GET("/auth/oauth/unsupported/callback").
+		Do().
+		ExpectStatus(http.StatusMethodNotAllowed)
+	if len(boundary.calls) != 1 || boundary.calls[0] != BoundaryOAuthCallback {
+		t.Fatalf("boundary calls = %v, want callback authorization before provider validation", boundary.calls)
+	}
+}
+
 func TestHTTPBoundaryDenialStopsLogin(t *testing.T) {
 	h := newServiceHarness(t, VerificationDisabled, nil)
 	h.accounts.seedPassword(t, "http@example.test", "http-user", true)
@@ -993,6 +1050,42 @@ func TestNewServiceSupportsFacebookAndRejectsUnknownProvider(t *testing.T) {
 	config.OAuthProviders = map[string]OAuthProvider{"unknown": &fakeProvider{name: "unknown"}}
 	if _, err := NewService(config); err == nil {
 		t.Fatal("unknown provider was accepted")
+	}
+}
+
+func TestNewServiceRequiresRevocationForEmailBackedTokenStores(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		set  func(*ServiceConfig, OneTimeTokenStore)
+	}{
+		{
+			name: "password reset",
+			set: func(config *ServiceConfig, store OneTimeTokenStore) {
+				config.PasswordResetTokens = OneTimeTokens{Store: store}
+			},
+		},
+		{
+			name: "email verification",
+			set: func(config *ServiceConfig, store OneTimeTokenStore) {
+				config.EmailVerifyTokens = OneTimeTokens{Store: store}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			accounts := newMemoryAccounts()
+			config := ServiceConfig{
+				Accounts: accounts, Policy: &memoryPolicy{mode: VerificationOptional, accounts: accounts},
+				BrowserSessions: &memorySessions{},
+				BrowserSessionLifetime: func(context.Context, Account) (time.Duration, error) {
+					return time.Hour, nil
+				},
+				Emails: &memoryEmails{},
+			}
+			test.set(&config, newFakeOneTimeTokenStore())
+			if _, err := NewService(config); !errors.Is(err, ErrOneTimeTokenRevokerRequired) {
+				t.Fatalf("NewService() error = %v, want ErrOneTimeTokenRevokerRequired", err)
+			}
+		})
 	}
 }
 

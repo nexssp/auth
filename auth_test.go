@@ -233,6 +233,13 @@ func TestAuth_RefreshTokenUsesConfiguredTTL(t *testing.T) {
 	}
 }
 
+func TestNewGORMStoreRejectsNilDatabase(t *testing.T) {
+	store, err := auth.NewGORMStore(nil)
+	if err == nil || store != nil {
+		t.Fatalf("NewGORMStore(nil) = (%v, %v), want a configuration error", store, err)
+	}
+}
+
 func TestGORMStore_ActionTokensAreHashedAtRest(t *testing.T) {
 	t.Parallel()
 	dbPath := filepath.Join(t.TempDir(), "tokens.db")

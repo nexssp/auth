@@ -11,7 +11,10 @@ import (
 	"strings"
 )
 
-var ErrSecretNotFound = errors.New("secret not found in environment or /run/secrets/")
+var (
+	ErrSecretNotFound    = errors.New("secret not found in environment or /run/secrets/")
+	ErrInvalidSecretName = errors.New("invalid secret name")
+)
 
 const runDir = string(filepath.Separator) + "run"
 
@@ -52,6 +55,9 @@ func Resolve(ctx context.Context, key string) (String, error) {
 	case <-ctx.Done():
 		return "", fmt.Errorf("resolution canceled: %w", ctx.Err())
 	default:
+		if !validSecretName(key) {
+			return "", fmt.Errorf("%w: %q", ErrInvalidSecretName, key)
+		}
 		if val := os.Getenv(key); val != "" {
 			return String(val), nil
 		}
@@ -69,4 +75,18 @@ func Resolve(ctx context.Context, key string) (String, error) {
 
 		return "", fmt.Errorf("%w: %s", ErrSecretNotFound, key)
 	}
+}
+
+func validSecretName(key string) bool {
+	if key == "" || key == "." || key == ".." {
+		return false
+	}
+	for _, char := range key {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '_' || char == '-' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }

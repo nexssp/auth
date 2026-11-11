@@ -3,6 +3,7 @@ package secret_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/nexssp/auth/secret"
@@ -48,5 +49,13 @@ func TestResolve_Env(t *testing.T) {
 	}
 	if s.Unwrap() != "hello-world" {
 		t.Errorf("expected hello-world, got %s", s.Unwrap())
+	}
+}
+
+func TestResolveRejectsUnsafeSecretNames(t *testing.T) {
+	for _, key := range []string{"", ".", "..", "../etc/passwd", `..\etc\passwd`, "/etc/passwd"} {
+		if _, err := secret.Resolve(context.Background(), key); !errors.Is(err, secret.ErrInvalidSecretName) {
+			t.Errorf("Resolve(%q) error = %v, want ErrInvalidSecretName", key, err)
+		}
 	}
 }

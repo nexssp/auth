@@ -91,11 +91,16 @@ func (OAuthAccountModel) TableName() string { return "auth_oauth_accounts" }
 // GORMStore Implementation
 // ---------------------------------------------------------------------
 
+// GORMStore implements the legacy Store interface. It is not a Service adapter.
 type GORMStore struct {
 	db *gorm.DB
 }
 
+// NewGORMStore migrates the legacy Store schema and returns its adapter.
 func NewGORMStore(db *gorm.DB) (*GORMStore, error) {
+	if db == nil {
+		return nil, errors.New("auth: GORM database is required")
+	}
 	if err := db.AutoMigrate(
 		&UserModel{},
 		&RoleModel{},

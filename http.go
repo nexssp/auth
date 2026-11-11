@@ -108,6 +108,7 @@ func (handler *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
+	r = r.WithContext(WithHTTPExchange(r.Context(), r, w))
 	handler.mux.ServeHTTP(w, r)
 }
 
@@ -312,6 +313,9 @@ func (handler *HTTPHandler) beginOAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (handler *HTTPHandler) oauthCallback(w http.ResponseWriter, r *http.Request) {
+	if !handler.authorize(w, r, BoundaryOAuthCallback, "") {
+		return
+	}
 	providerName := r.PathValue("provider")
 	provider, ok := handler.service.config.OAuthProviders[providerName]
 	if !ok || r.Method != provider.CallbackMethod() {
@@ -329,9 +333,6 @@ func (handler *HTTPHandler) oauthCallback(w http.ResponseWriter, r *http.Request
 		state, code = r.Form.Get("state"), r.Form.Get("code")
 	} else {
 		state, code = r.URL.Query().Get("state"), r.URL.Query().Get("code")
-	}
-	if !handler.authorize(w, r, BoundaryOAuthCallback, "") {
-		return
 	}
 	result, err := handler.service.CompleteProviderCallback(r.Context(), providerName, state, code)
 	if err != nil {
@@ -437,7 +438,7 @@ func (handler *HTTPHandler) authorize(w http.ResponseWriter, r *http.Request, op
 		status := http.StatusForbidden
 		if errors.Is(err, ErrRateLimited) {
 			status = http.StatusTooManyRequests
-		} else if errors.Is(err, ErrTurnstileUnavailable) {
+		} else if errors.Is(err, ErrTurnstileUnavailable) || errors.Is(err, ErrRateLimiterUnavailable) {
 			status = http.StatusServiceUnavailable
 		}
 		handler.writeJSON(w, status, map[string]string{jsonErrorKey: "Authentication request was not accepted."})

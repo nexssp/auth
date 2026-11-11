@@ -215,6 +215,16 @@ func NewService(config ServiceConfig) (*Service, error) {
 	if config.Accounts == nil || config.Policy == nil || config.BrowserSessions == nil || config.BrowserSessionLifetime == nil {
 		return nil, errors.New("auth: account store, host policy, browser sessions, and browser lifetime are required")
 	}
+	if config.Emails != nil {
+		for _, tokens := range []OneTimeTokens{config.PasswordResetTokens, config.EmailVerifyTokens} {
+			if tokens.Store == nil {
+				continue
+			}
+			if _, ok := tokens.Store.(OneTimeTokenRevoker); !ok {
+				return nil, ErrOneTimeTokenRevokerRequired
+			}
+		}
+	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}

@@ -1,4 +1,3 @@
-// Replace the top part of auth/middleware.go with this:
 package auth
 
 import (
@@ -54,7 +53,7 @@ func JWTMiddleware(cfg JWTConfig) func(http.Handler) http.Handler {
 
 			if scope.RequestID == "" {
 				reqID := r.Header.Get("X-Request-ID")
-				if reqID == "" {
+				if !validRequestID(reqID) {
 					reqID = uuid.NewString()
 				}
 				scope.RequestID = reqID
@@ -69,6 +68,15 @@ func JWTMiddleware(cfg JWTConfig) func(http.Handler) http.Handler {
 					return
 				}
 				writeJSONError(w, http.StatusUnauthorized, "missing token")
+				return
+			}
+
+			if cfg.VerifyFn == nil {
+				if isPublic || cfg.Optional {
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				writeJSONError(w, http.StatusServiceUnavailable, "authentication is unavailable")
 				return
 			}
 
@@ -88,6 +96,20 @@ func JWTMiddleware(cfg JWTConfig) func(http.Handler) http.Handler {
 	}
 }
 
+func validRequestID(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, char := range value {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' || char == ':' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // matchesPublicPath supports exact public endpoints by default. A configured
 // trailing slash explicitly denotes a public route group.
 func matchesPublicPath(cleanPath, configuredPath string) bool {
@@ -101,9 +123,9 @@ func matchesPublicPath(cleanPath, configuredPath string) bool {
 }
 
 func bearerToken(r *http.Request) string {
-	v := r.Header.Get("Authorization")
-	if len(v) > 7 && v[:7] == "Bearer " {
-		return v[7:]
+	parts := strings.Fields(r.Header.Get("Authorization"))
+	if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		return parts[1]
 	}
 	return ""
 }

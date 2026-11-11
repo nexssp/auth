@@ -8,6 +8,36 @@ Production code should build `auth.Service` with host implementations of `Accoun
 
 The host must preserve the contracts documented on each interface. In particular, account uniqueness and registration eligibility must be atomic; reset and verification token consumption must be single-use; password changes must revoke existing auth state in one transaction; OAuth state and desktop code exchange must be atomic; and provider identity linking must require the signed-in account's explicit action. Use a database-backed or distributed rate limiter for multi-instance deployments rather than relying on per-process memory.
 
+When an `EmailSender` is configured with reset or verification token storage, that token store must also implement `OneTimeTokenRevoker`. `NewService` rejects email-backed token configurations without revocation. If revocation itself fails after a delivery failure, the service returns both errors; the generic forgot/resend HTTP response remains non-enumerating, so hosts that need operational alerts must monitor this failure through a privacy-safe channel.
+
+The current `Service` contracts are not implemented by the legacy `GORMStore` or `NewMemoryStore`; those implement the older `Store` API. A host that uses `Service` must implement each enabled modern interface and its atomicity guarantees itself. A passing library test suite does not establish correctness of host adapters, database transactions, session cookies, trusted-proxy configuration, or application authorization.
+
+## Reuse the HTTP rate-limit boundary
+
+The package can compose the existing `security/ratelimit` limiter with the host's `RequestBoundary`, so hosts do not need to reimplement rate-limit plumbing. The host still chooses thresholds/backends and supplies `Key`, which must derive caller identity from trusted middleware or a correctly configured proxy chain—not directly from caller-controlled forwarded headers. Use a keyed digest if the backend would otherwise retain personal identifiers. Rate limiting happens before the wrapped boundary; a denial maps to HTTP `429`, and key-derivation or backend failures fail closed with HTTP `503`.
+
+```go
+rateLimitedBoundary, err := auth.NewRateLimitedRequestBoundary(hostRequestBoundary, auth.RateLimitConfig{
+    Default: ratelimit.NewRedisLimiter(redisClient, 10, 20, "myapp:auth"),
+    Operations: map[auth.BoundaryOperation]ratelimit.Limiter{
+        auth.BoundaryLogin: ratelimit.NewRedisLimiter(redisClient, 2, 5, "myapp:auth:login"),
+    },
+    Key: hostAuthRateLimitKey, // host function using trusted client/session identity
+})
+if err != nil {
+    return err
+}
+
+handler, err := auth.NewHTTPHandler(auth.HTTPConfig{
+    Service:  service,
+    Boundary: rateLimitedBoundary,
+})
+```
+
+The adapter adds an `auth:<operation>:` prefix to each key, so operations have separate buckets even when they share one limiter. `Default` covers every auth operation and `Operations` overrides only the listed ones. Keep request-origin/CSRF checks, Turnstile, terms and registration eligibility in the wrapped host boundary; rate limiting does not replace those controls. For multi-instance deployments, use a shared limiter such as Redis rather than `ratelimit.NewMemoryLimiter`.
+
+For public browser routes, pass `rateLimitedBoundary` to `NewSecureHTTPHandler`; its Turnstile boundary invokes the wrapped boundary first, so rate limiting runs before Siteverify. Use `NewHTTPHandler` directly only when the host supplies equivalent server-side anti-abuse verification itself.
+
 ## Require Turnstile on public browser auth
 
 Create Cloudflare Turnstile keys for the exact browser hostname. Configure these values in the host environment or secret manager before creating the HTTP handler or Flow boundary:
@@ -48,7 +78,7 @@ Follow Cloudflare's [server-side validation guide](https://developers.cloudflare
 
 ## Sessions, identity, and application authorization
 
-The host owns session-cookie issuance and must rotate the session identifier on login and privilege changes. Set `Secure`, `HttpOnly`, and an appropriate `SameSite` value; scope cookies narrowly; enforce idle and absolute expiry; and implement CSRF protection for cookie-authenticated state changes. The `BrowserSessionHost` is responsible for these behaviors. When using `WithHTTPExchange`, use the request/response objects only for the current call and never retain or serialize a response writer.
+The host owns session-cookie issuance and must rotate the session identifier on login and privilege changes. Set `Secure`, `HttpOnly`, and an appropriate `SameSite` value; scope cookies narrowly; enforce idle and absolute expiry; and implement CSRF protection for cookie-authenticated state changes. The `BrowserSessionHost` is responsible for these behaviors. `HTTPHandler` attaches the active exchange for its own routes; Flow or other host-managed executions must attach it with `WithHTTPExchange`. Use request/response objects only for the current call and never retain or serialize a response writer.
 
 Derive the current account from a validated host session. Never trust caller-supplied identity headers, tenant IDs, workspace IDs, roles, or forwarded-IP headers. Configure the trusted-proxy chain before using client IPs for rate limits. This package does not decide tenant membership, tenant-to-database routing, workspace/project access, roles, or resource permissions; authorize each operation in the host using current server-side state.
 
@@ -61,6 +91,8 @@ Use fixed OAuth callback URLs registered at the provider; never accept a callbac
 ## Legacy API
 
 `auth.New(Config)` is deprecated and restricted to explicit `dev`, `development`, or `test` environments. It is not a production compatibility path: its legacy behavior does not replace the host-owned service, session, Turnstile, and authorization boundaries. Do not label a public deployment `development` to bypass the restriction. The legacy middleware also no longer accepts credentials from query strings.
+
+The legacy `Store`, `GORMStore`, and `NewMemoryStore` APIs also include older token, OAuth, role, and tenancy behavior; they do not provide the modern `Service` interface or its transactional guarantees. Do not use them as drop-in production persistence for `Service`, and do not treat legacy tenant or role data as application authorization policy.
 
 ## AES-GCM encryption helper key
 
