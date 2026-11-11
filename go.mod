@@ -7,9 +7,9 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/nexssp/flow v0.71.1
-	github.com/nexssp/kernel v0.38.0
+	github.com/nexssp/kernel v0.38.1
 	github.com/nexssp/testkit v0.9.1
-	github.com/nexssp/transport v0.12.0
+	github.com/nexssp/transport v0.13.0
 	github.com/redis/go-redis/v9 v9.23.0
 	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2
 	golang.org/x/oauth2 v0.38.0
@@ -34,7 +34,7 @@ require (
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

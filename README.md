@@ -1,6 +1,8 @@
 # nexssp/auth
 
-`github.com/nexssp/auth` is a reusable Go authentication module for Nexss ecosystem applications.
+<small>Nexss Flow 🌀 ready</small>
+
+`github.com/nexssp/auth` is a reusable Go authentication module for Nexss ecosystem and Go applications.
 
 The module contains storage-neutral authentication use cases, provider adapters, guarded HTTP routes, a credential-free Kernel session action, and an opt-in Flow bundle. Applications supply account storage, registration policy, email delivery, browser-session and CSRF behavior, rate limiting, and deployment configuration.
 
