@@ -6,4 +6,5 @@
   reports.read
 @end
 
-{} | pipeline.read_report
+{}
+  -> pipeline.read_report

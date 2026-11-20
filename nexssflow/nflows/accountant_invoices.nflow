@@ -2,7 +2,8 @@
 @pipeline accountant_invoice_list
   :auth
   :role=viewer
-  invoice.list @{ year: "2026", type_filter: "standard", limit: 25, page: 1, sort: "-invoice_date" }
+  invoice.list(year: "2026", type_filter: "standard", limit: 25, page: 1, sort: "-invoice_date")
 @end
 
-{} | pipeline.accountant_invoice_list
+{}
+  -> pipeline.accountant_invoice_list

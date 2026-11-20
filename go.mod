@@ -6,8 +6,8 @@ require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/nexssp/flow v0.80.0
-	github.com/nexssp/kernel v0.39.1
+	github.com/nexssp/flow v0.94.0
+	github.com/nexssp/kernel v0.40.3
 	github.com/nexssp/testkit v0.9.1
 	github.com/nexssp/transport v0.13.0
 	github.com/redis/go-redis/v9 v9.23.0

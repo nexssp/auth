@@ -99,7 +99,7 @@
 @pipeline auth_register
   :request-schema=!RegisterRequest
   :response-schema=!RegisterResponse
-  auth.register @{
+  auth.register(
     email: .credentials.email,
     username: .credentials.username,
     password: .credentials.password,
@@ -107,72 +107,81 @@
     invite_code: .credentials.invite_code,
     terms_accepted: .credentials.terms_accepted,
     turnstile_token: .credentials.turnstile_token
-  }
+  )
 @end
 @pipeline auth_login
   :request-schema=!LoginRequest
   :response-schema=!LoginResponse
-  auth.login @{
+  auth.login(
     identifier: .credentials.identifier,
     password: .credentials.password,
     turnstile_token: .credentials.turnstile_token
-  }
+  )
 @end
 @pipeline auth_logout
   :response-schema=!LogoutResponse
-  auth.logout @{}
+  auth.logout()
 @end
 @pipeline auth_password_forgot
   :request-schema=!PasswordForgotRequest
   :response-schema=!MessageResponse
-  auth.password_forgot @{
+  auth.password_forgot(
     email: .credentials.email,
     turnstile_token: .credentials.turnstile_token
-  }
+  )
 @end
 @pipeline auth_password_reset
   :request-schema=!PasswordResetRequest
   :response-schema=!PasswordResetResponse
-  auth.password_reset @{
+  auth.password_reset(
     token: .credentials.token,
     password: .credentials.password,
     confirmation: .credentials.confirmation,
     turnstile_token: .credentials.turnstile_token
-  }
+  )
 @end
 @pipeline auth_email_verify
   :request-schema=!EmailVerifyRequest
   :response-schema=!EmailVerifyResponse
-  auth.email_verify @{
+  auth.email_verify(
     token: .credentials.token,
     turnstile_token: .credentials.turnstile_token
-  }
+  )
 @end
 @pipeline auth_email_resend
   :request-schema=!EmailResendRequest
   :response-schema=!MessageResponse
-  auth.email_resend @{
+  auth.email_resend(
     email: .credentials.email,
     turnstile_token: .credentials.turnstile_token
-  }
+  )
 @end
 @pipeline auth_current_session
   :response-schema=!CurrentSessionResponse
-  auth.current_session @{}
+  auth.current_session()
 @end
 
 @pipeline auth_api
   :request-schema=!AuthDispatchRequest
   match (.operation) {
-    "register" -> pipeline.auth_register @{ credentials: .credentials },
-    "login" -> pipeline.auth_login @{ credentials: .credentials },
-    "logout" -> pipeline.auth_logout @{},
-    "password_forgot" -> pipeline.auth_password_forgot @{ credentials: .credentials },
-    "password_reset" -> pipeline.auth_password_reset @{ credentials: .credentials },
-    "email_verify" -> pipeline.auth_email_verify @{ credentials: .credentials },
-    "email_resend" -> pipeline.auth_email_resend @{ credentials: .credentials },
-    "current_session" -> pipeline.auth_current_session @{},
-    _ -> fail @{ kind: "BadRequest", message: "Unsupported auth operation" }
+    "register"
+      -> pipeline.auth_register(credentials: .credentials),
+    "login"
+      -> pipeline.auth_login(credentials: .credentials),
+    "logout"
+      -> pipeline.auth_logout(),
+    "password_forgot"
+      -> pipeline.auth_password_forgot(credentials: .credentials),
+    "password_reset"
+      -> pipeline.auth_password_reset(credentials: .credentials),
+    "email_verify"
+      -> pipeline.auth_email_verify(credentials: .credentials),
+    "email_resend"
+      -> pipeline.auth_email_resend(credentials: .credentials),
+    "current_session"
+      -> pipeline.auth_current_session(),
+    _
+      -> fail(kind: "BadRequest", message: "Unsupported auth operation")
   }
 @end
 
