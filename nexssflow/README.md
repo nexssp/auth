@@ -73,7 +73,7 @@ For raw HTTP endpoints, use `auth.NewSecureHTTPHandler` with the same verifier. 
 
 ## OAuth and desktop endpoints
 
-OAuth and desktop flows keep using the guarded core handler from `auth.NewSecureHTTPHandler`; the auth Flow module does not add fake pipelines for these raw HTTP protocols. To put them on the same Transport listener, register the handler's routes as `thttp.RawHandler` bindings in a host-owned action bundle. Transport v0.12.0 discovers raw-handler bindings alongside the Flow `:route` pipelines, and the same host middleware supplies the request context and response writer. Alternatively, mount the secure handler on a host-owned mux. The host `RequestBoundary` remains mandatory.
+OAuth and desktop flows keep using the guarded core handler from `auth.NewSecureHTTPHandler`; the auth Flow module does not add fake pipelines for these raw HTTP protocols. To put them on the same Transport listener, register the handler's routes as `thttp.RawHandler` bindings in a host-owned action bundle. Transport v0.19.1 discovers raw-handler bindings alongside the Flow `:route` pipelines, and the same host middleware supplies the request context and response writer. Alternatively, mount the secure handler on a host-owned mux. The host `RequestBoundary` remains mandatory.
 
 The raw endpoints are:
 

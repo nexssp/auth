@@ -177,12 +177,13 @@ linters:
         linters: [govet]
 
 formatters:
-  enable: [gofumpt, gci]
+  enable: [gofmt, gofumpt, gci]
   settings:
-    gofumpt:
+    gofmt:
       rewrite-rules:
-          - pattern: 'interface{}'
-            replacement: 'any'
+        - pattern: 'interface{}'
+          replacement: 'any'
+    gofumpt:
       extra:
         group-params: true
     gci:

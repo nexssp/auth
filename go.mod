@@ -6,10 +6,10 @@ require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
-	github.com/nexssp/flow v0.94.0
+	github.com/nexssp/flow v0.95.0
 	github.com/nexssp/kernel v0.40.3
-	github.com/nexssp/testkit v0.9.1
-	github.com/nexssp/transport v0.13.0
+	github.com/nexssp/testkit v0.10.0
+	github.com/nexssp/transport v0.19.1
 	github.com/redis/go-redis/v9 v9.23.0
 	golang.org/x/crypto v0.59.0
 	golang.org/x/oauth2 v0.38.0
@@ -31,7 +31,7 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
-	github.com/nexssp/validation v0.5.0 // indirect
+	github.com/nexssp/validation v0.6.0 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
 	golang.org/x/mod v0.43.0 // indirect
