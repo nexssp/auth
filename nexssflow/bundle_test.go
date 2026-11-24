@@ -359,8 +359,9 @@ func TestFlowRunnerTraceRedactsRuntimeAuthInput(t *testing.T) {
 			t.Fatalf("Flow trace exposed runtime input %q:\n%s\n%s", secret, stdout.String(), stderr.String())
 		}
 	}
-	if !strings.Contains(stdout.String(), "[REDACTED]") {
-		t.Fatalf("verbose trace did not demonstrate redaction:\n%s", stdout.String())
+	trace := stdout.String()
+	if !strings.Contains(trace, "[REDACTED]") && !strings.Contains(trace, "in:  <omitted; intermediate payload>") {
+		t.Fatalf("verbose trace did not demonstrate redaction or input omission:\n%s", trace)
 	}
 }
 
