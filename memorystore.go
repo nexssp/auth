@@ -191,6 +191,19 @@ func (s *memoryStore) DeleteVerificationToken(_ context.Context, t string) error
 	return s.delToken(t)
 }
 
+func (s *memoryStore) ConsumeVerificationToken(_ context.Context, userID, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := actionTokenKey(token)
+	entry, ok := s.tokens[key]
+	if !ok || entry.typ != "verify" || entry.userID != userID || !time.Now().Before(entry.expiry) {
+		return ErrInvalidVerificationToken
+	}
+	delete(s.tokens, key)
+	return nil
+}
+
 func (s *memoryStore) CreateResetToken(_ context.Context, u, t string, exp time.Time) error {
 	return s.setToken(t, "reset", u, exp)
 }

@@ -58,6 +58,8 @@ For Flow, wrap the host `ActionBoundary` with `nexssflow.NewTurnstileActionBound
 
 The old `auth.New(Config)` plugin is deprecated and now refuses to initialize unless `Config.Env` is explicitly `dev`, `development`, or `test`. Production hosts must use `NewService` with host-owned adapters. The legacy middleware no longer reads JWTs from query strings; use the `Authorization: Bearer` header where bearer credentials are appropriate.
 
+JWTs issued by older legacy-plugin versions do not contain the required `token_use` claim and are rejected by the purpose-specific access/refresh verifiers; upgrading requires a fresh login. `GenerateTokensWithClaims` also requires an `exp` claim. Custom legacy `Store` implementations used for email MFA must implement `VerificationTokenConsumer`; otherwise verification fails closed rather than accepting replayable codes.
+
 ## Install and verify
 
 ```sh

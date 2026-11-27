@@ -18,6 +18,17 @@ type Mutex interface {
 	Unlock(ctx context.Context, key string) error
 }
 
+// Lease is the ownership capability for one successful lock acquisition.
+type Lease interface {
+	Unlock(ctx context.Context) error
+}
+
+// LeaseMutex releases only the exact acquisition returned to its caller.
+// Implementations should prefer this contract when lock expiry can overlap work.
+type LeaseMutex interface {
+	TryAcquire(ctx context.Context, key string, ttl time.Duration) (Lease, bool, error)
+}
+
 // Exclusive wraps an action so it only executes if it acquires the lock.
 // If the lock is held by another node, it returns ErrLocked immediately (fast fail).
 func Exclusive[Req, Res any](m Mutex, ttl time.Duration, keyFn func(Req) string) action.Middleware[Req, Res] {
@@ -28,7 +39,21 @@ func Exclusive[Req, Res any](m Mutex, ttl time.Duration, keyFn func(Req) string)
 				return next(ctx, req)
 			}
 
-			acquired, err := m.TryLock(ctx, key, ttl)
+			var unlock func(context.Context) error
+			var acquired bool
+			if leased, ok := m.(LeaseMutex); ok {
+				lease, gotLock, acquireErr := leased.TryAcquire(ctx, key, ttl)
+				acquired, err = gotLock, acquireErr
+				if acquired && lease == nil {
+					return res, xerr.Unavailable("distributed lock returned no lease", nil)
+				}
+				if lease != nil {
+					unlock = lease.Unlock
+				}
+			} else {
+				acquired, err = m.TryLock(ctx, key, ttl)
+				unlock = func(unlockCtx context.Context) error { return m.Unlock(unlockCtx, key) }
+			}
 			if err != nil {
 				return res, xerr.Unavailable("failed to acquire distributed lock", err)
 			}
@@ -38,7 +63,7 @@ func Exclusive[Req, Res any](m Mutex, ttl time.Duration, keyFn func(Req) string)
 
 			// Ensure unlock runs even if the context gets canceled or action panics.
 			defer func() {
-				if uerr := m.Unlock(context.WithoutCancel(ctx), key); uerr != nil {
+				if uerr := unlock(context.WithoutCancel(ctx)); uerr != nil {
 					if err == nil {
 						err = xerr.Unavailable("failed to release distributed lock", uerr)
 					} else {
@@ -49,7 +74,7 @@ func Exclusive[Req, Res any](m Mutex, ttl time.Duration, keyFn func(Req) string)
 			}()
 
 			res, err = next(ctx, req)
-			return
+			return res, err
 		}
 	}
 }

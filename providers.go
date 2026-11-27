@@ -236,11 +236,17 @@ func (provider *oidcProvider) Complete(ctx context.Context, code, nonce, verifie
 		return ProviderIdentity{}, fmt.Errorf("decode %s ID token claims: %w", provider.name, err)
 	}
 	verified := verifiedClaim(claims.EmailVerified)
+	if provider.name == providerApple {
+		verified = appleVerifiedClaim(claims.EmailVerified)
+	}
 	email := normalizeEmail(claims.Email)
+	missingAppleEmail := provider.name == providerApple && claims.Email == ""
 	now := provider.timeNow()
 	wrongAuthorizedParty := claims.Authorized != "" && claims.Authorized != provider.config.ClientID
 	missingAuthorizedParty := len(idToken.Audience) > 1 && claims.Authorized != provider.config.ClientID
-	if claims.Subject == "" || len(claims.Subject) > 255 || hasControl(claims.Subject) || (claims.Email != "" && email == "") || (provider.requireVerifiedEmail && (email == "" || !verified)) || !constantTimeEqual(claims.Nonce, nonce) || wrongAuthorizedParty || missingAuthorizedParty || idToken.IssuedAt.IsZero() || idToken.IssuedAt.After(now.Add(5*time.Minute)) || !idToken.Expiry.After(now) {
+	// Apple may omit email after the first authorization. The Service accepts
+	// that identity only when its provider subject is already linked to an account.
+	if claims.Subject == "" || len(claims.Subject) > 255 || hasControl(claims.Subject) || (claims.Email != "" && email == "") || (provider.requireVerifiedEmail && !missingAppleEmail && (email == "" || !verified)) || !constantTimeEqual(claims.Nonce, nonce) || wrongAuthorizedParty || missingAuthorizedParty || idToken.IssuedAt.IsZero() || idToken.IssuedAt.After(now.Add(5*time.Minute)) || !idToken.Expiry.After(now) {
 		return ProviderIdentity{}, ErrInvalidOAuthResponse
 	}
 	return ProviderIdentity{Provider: provider.name, Subject: claims.Subject, Email: email, EmailVerified: email != "" && verified}, nil
@@ -529,6 +535,14 @@ func verifiedClaim(raw json.RawMessage) bool {
 	}
 	var value bool
 	return json.Unmarshal(raw, &value) == nil && value
+}
+
+func appleVerifiedClaim(raw json.RawMessage) bool {
+	if verifiedClaim(raw) {
+		return true
+	}
+	var value string
+	return json.Unmarshal(raw, &value) == nil && value == "true"
 }
 
 // ValidateProviderRedirectURL is exposed for host config checks. OAuth redirect

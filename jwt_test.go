@@ -63,6 +63,7 @@ func TestJWT_CustomClaims(t *testing.T) {
 		"sub":   "usr_custom_555",
 		"ten":   "tenant_beta",
 		"roles": []string{"operator", "billing"},
+		"jti":   "custom-access-id",
 		"exp":   time.Now().Add(10 * time.Minute).Unix(),
 	}
 
@@ -74,6 +75,36 @@ func TestJWT_CustomClaims(t *testing.T) {
 	parsed, err := auth.VerifyToken(tokens.Access)
 	if err != nil || !parsed.Valid {
 		t.Fatalf("failed to verify custom claims token: %v", err)
+	}
+	if _, err := auth.VerifyAccessToken(tokens.Access); err != nil {
+		t.Fatalf("VerifyAccessToken(access) error = %v", err)
+	}
+	if _, err := auth.VerifyRefreshToken(tokens.Refresh); err != nil {
+		t.Fatalf("VerifyRefreshToken(refresh) error = %v", err)
+	}
+	if _, err := auth.VerifyRefreshToken(tokens.Access); err == nil {
+		t.Fatal("VerifyRefreshToken accepted an access token")
+	}
+	if _, err := auth.VerifyAccessToken(tokens.Refresh); err == nil {
+		t.Fatal("VerifyAccessToken accepted a refresh token")
+	}
+	accessClaims, claimsOK := parsed.Claims.(jwt.MapClaims)
+	if !claimsOK {
+		t.Fatal("access token claims are not a MapClaims")
+	}
+	refresh, err := auth.VerifyRefreshToken(tokens.Refresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshClaims, refreshClaimsOK := refresh.Claims.(jwt.MapClaims)
+	if !refreshClaimsOK {
+		t.Fatal("refresh token claims are not a MapClaims")
+	}
+	if accessClaims["jti"] == refreshClaims["jti"] {
+		t.Fatal("access and refresh tokens share a token id")
+	}
+	if _, err := auth.GenerateTokensWithClaims(jwt.MapClaims{"sub": "missing-exp"}); err == nil {
+		t.Fatal("GenerateTokensWithClaims accepted access claims without exp")
 	}
 }
 
@@ -104,5 +135,13 @@ func TestJWTRejectsMismatchedKeysAndNonRS256Algorithm(t *testing.T) {
 	}
 	if _, err := auth.VerifyToken(token); err == nil {
 		t.Fatal("VerifyToken accepted an RS384 token; only RS256 is allowed")
+	}
+
+	nonExpiring, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{"sub": "user-123"}).SignedString(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.VerifyToken(nonExpiring); err == nil {
+		t.Fatal("VerifyToken accepted a token without exp")
 	}
 }

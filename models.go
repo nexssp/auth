@@ -3,8 +3,13 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrInvalidVerificationToken indicates a missing, expired, or wrong-user
+// verification token returned by an atomic verification-token consumer.
+var ErrInvalidVerificationToken = errors.New("auth: invalid or expired verification token")
 
 // ---------------------------------------------------------------------
 // Domain Models
@@ -84,6 +89,13 @@ type Store interface {
 	// OAuth 2.0
 	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (userID string, err error)
 	LinkOAuthAccount(ctx context.Context, userID, provider, providerUserID string) error
+}
+
+// VerificationTokenConsumer atomically validates and consumes a verification
+// token for one user. Stores used with email MFA must implement this capability;
+// the provider fails closed when it is unavailable.
+type VerificationTokenConsumer interface {
+	ConsumeVerificationToken(ctx context.Context, userID, token string) error
 }
 
 // ---------------------------------------------------------------------

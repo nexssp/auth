@@ -87,7 +87,7 @@ func New(cfg Config) (*Plugin, error) {
 
 	p.protect = JWTMiddleware(JWTConfig{
 		VerifyFn: func(_ context.Context, t string) (jwt.MapClaims, error) {
-			tok, err := VerifyToken(t)
+			tok, err := VerifyAccessToken(t)
 			if err != nil || !tok.Valid {
 				return nil, err
 			}
@@ -363,12 +363,12 @@ func (p *Plugin) requiresSecondFactor(trustedDeviceToken, userID string) bool {
 	if trustedDeviceToken == "" {
 		return true
 	}
-	token, err := VerifyToken(trustedDeviceToken)
+	token, err := verifyTypedAccessToken(trustedDeviceToken, tokenTypeTrustedDevice)
 	if err != nil || token == nil {
 		return true
 	}
 	claims, ok := token.Claims.(jwt.MapClaims)
-	return !ok || claims["type"] != "trusted_device" || claims["sub"] != userID
+	return !ok || claims["sub"] != userID
 }
 
 func (p *Plugin) sendMFAChallenge(ctx context.Context, user *User) (authRes, error) {
@@ -408,7 +408,7 @@ func (p *Plugin) sendMFAChallenge(ctx context.Context, user *User) (authRes, err
 
 	tokens, err := GenerateTokensWithClaims(jwt.MapClaims{
 		"sub":  user.ID,
-		"type": "pre-auth",
+		"type": tokenTypeMFAPreAuth,
 		"exp":  time.Now().Add(5 * time.Minute).Unix(),
 	})
 	if err != nil {
@@ -421,12 +421,12 @@ func (p *Plugin) buildLogin2FA() action.AnyAction {
 	lim := p.createRateLimiter()
 
 	return action.New("auth.login_2fa", func(ctx context.Context, req login2FAReq) (authRes, error) {
-		tok, err := VerifyToken(req.SessionToken)
+		tok, err := verifyTypedAccessToken(req.SessionToken, tokenTypeMFAPreAuth)
 		if err != nil {
 			return authRes{}, xerr.Unauthorized("Sesja wygasła. Zaloguj się ponownie.")
 		}
 		claims, ok := tok.Claims.(jwt.MapClaims)
-		if !ok || claims["type"] != "pre-auth" {
+		if !ok {
 			return authRes{}, xerr.Unauthorized("Nieprawidłowy token sesji.")
 		}
 
@@ -438,13 +438,15 @@ func (p *Plugin) buildLogin2FA() action.AnyAction {
 		safeCtx := context.WithoutCancel(ctx)
 
 		dbToken := userID + ":" + req.Code
-		tokenUserID, err := p.cfg.Store.GetVerificationToken(safeCtx, dbToken)
-		if err != nil || tokenUserID != userID {
-			return authRes{}, xerr.Unauthorized("Nieprawidłowy lub wygasły kod.")
-		}
-
-		if cleanupErr := p.cfg.Store.DeleteVerificationToken(safeCtx, dbToken); cleanupErr != nil {
-			slog.ErrorContext(safeCtx, "MFA verification token cleanup failed")
+		consumeErr := consumeVerificationToken(safeCtx, p.cfg.Store, userID, dbToken)
+		if consumeErr != nil {
+			if errors.Is(consumeErr, errAtomicVerificationTokenConsumptionUnavailable) {
+				return authRes{}, xerr.Unavailable("Email MFA storage does not support atomic code consumption")
+			}
+			if errors.Is(consumeErr, ErrInvalidVerificationToken) {
+				return authRes{}, xerr.Unauthorized("Nieprawidłowy lub wygasły kod.")
+			}
+			return authRes{}, xerr.Unavailable("Email MFA verification is unavailable")
 		}
 
 		user, err := p.cfg.Store.GetUserByID(safeCtx, userID)
@@ -460,7 +462,7 @@ func (p *Plugin) buildLogin2FA() action.AnyAction {
 		if req.TrustDevice {
 			trustedClaims := jwt.MapClaims{
 				"sub":  user.ID,
-				"type": "trusted_device",
+				"type": tokenTypeTrustedDevice,
 				"exp":  time.Now().Add(30 * 24 * time.Hour).Unix(),
 			}
 			trustedTokens, err := GenerateTokensWithClaims(trustedClaims)
@@ -484,7 +486,7 @@ func (p *Plugin) buildRefresh() action.AnyAction {
 			return Token{}, xerr.BadRequest("missing refresh token")
 		}
 
-		tok, err := VerifyToken(req.RefreshToken)
+		tok, err := VerifyRefreshToken(req.RefreshToken)
 		if err != nil {
 			return Token{}, xerr.Unauthorized("invalid token signature")
 		}
@@ -524,7 +526,7 @@ func (p *Plugin) buildRefresh() action.AnyAction {
 func (p *Plugin) buildLogout() action.AnyAction {
 	return action.New("auth.logout", func(ctx context.Context, req refreshReq) (*action.MessageRes, error) {
 		if req.RefreshToken != "" {
-			if tok, err := VerifyToken(req.RefreshToken); err == nil {
+			if tok, err := VerifyRefreshToken(req.RefreshToken); err == nil {
 				if claims, ok := tok.Claims.(jwt.MapClaims); ok {
 					if jti, _ := claims["jti"].(string); jti != "" {
 						if revokeErr := p.cfg.Store.RevokeRefreshToken(context.WithoutCancel(ctx), jti); revokeErr != nil {
@@ -705,11 +707,11 @@ func (p *Plugin) issueTokens(ctx context.Context, user *User, requestedTenantID 
 		perms = append(perms, rolePermissions...)
 	}
 
-	tokenID := uuid.NewString()
+	refreshTokenID := uuid.NewString()
 	expAccess := time.Now().Add(p.cfg.AccessTTL)
 	expRefresh := time.Now().Add(p.cfg.RefreshTTL)
 
-	if createErr := p.cfg.Store.CreateRefreshToken(ctx, user.ID, tokenID, expRefresh); createErr != nil {
+	if createErr := p.cfg.Store.CreateRefreshToken(ctx, user.ID, refreshTokenID, expRefresh); createErr != nil {
 		return authRes{}, xerr.Database("failed to store refresh token", createErr)
 	}
 
@@ -721,13 +723,13 @@ func (p *Plugin) issueTokens(ctx context.Context, user *User, requestedTenantID 
 		"roles":              roles,
 		"perms":              perms,
 		"features":           features,
-		"jti":                tokenID,
+		"jti":                uuid.NewString(),
 		"exp":                expAccess.Unix(),
 		"iat":                time.Now().Unix(),
 		"verified":           user.Verified,
 	}
 
-	tokens, err := generateTokensWithClaims(claims, p.cfg.RefreshTTL)
+	tokens, err := generateTokensWithRefreshID(claims, p.cfg.RefreshTTL, refreshTokenID)
 	if err != nil {
 		return authRes{}, xerr.Internal("token generation failed", err)
 	}

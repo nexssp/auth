@@ -247,6 +247,20 @@ func (s *GORMStore) DeleteVerificationToken(ctx context.Context, token string) e
 	return s.db.WithContext(ctx).Where("token = ? AND type = ?", actionTokenKey(token), "verify").Delete(&ActionTokenModel{}).Error
 }
 
+func (s *GORMStore) ConsumeVerificationToken(ctx context.Context, userID, token string) error {
+	result := s.db.WithContext(ctx).Where(
+		"token = ? AND type = ? AND user_id = ? AND expires_at > ?",
+		actionTokenKey(token), "verify", userID, time.Now(),
+	).Delete(&ActionTokenModel{})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return ErrInvalidVerificationToken
+	}
+	return nil
+}
+
 func (s *GORMStore) CreateResetToken(ctx context.Context, userID, token string, expiry time.Time) error {
 	return s.db.WithContext(ctx).Create(&ActionTokenModel{Token: actionTokenKey(token), Type: "reset", UserID: userID, ExpiresAt: expiry}).Error
 }

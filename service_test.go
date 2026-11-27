@@ -378,14 +378,14 @@ func (store *memoryDesktopAuth) HasDesktopAuthRequest(_ context.Context, digest 
 	store.requestMu.Lock()
 	defer store.requestMu.Unlock()
 	request, ok := store.requests[digest]
-	return ok && request.ExpiresAt.Unix() >= now.Unix(), nil
+	return ok && request.ExpiresAt.After(now), nil
 }
 
 func (store *memoryDesktopAuth) ConsumeDesktopAuthRequest(ctx context.Context, digest string, now time.Time, apply func(context.Context, DesktopAuthRequest) error) error {
 	store.requestMu.Lock()
 	defer store.requestMu.Unlock()
 	request, ok := store.requests[digest]
-	if !ok || request.ExpiresAt.Unix() < now.Unix() {
+	if !ok || !request.ExpiresAt.After(now) {
 		return ErrInvalidDesktopAuth
 	}
 	if err := apply(ctx, request); err != nil {
@@ -406,7 +406,7 @@ func (store *memoryDesktopAuth) ConsumeDesktopAuthCode(ctx context.Context, dige
 	store.codeMu.Lock()
 	defer store.codeMu.Unlock()
 	code, ok := store.codes[digest]
-	if !ok || code.ExpiresAt.Unix() < now.Unix() {
+	if !ok || !code.ExpiresAt.After(now) {
 		return ErrInvalidDesktopAuth
 	}
 	if err := apply(ctx, code); err != nil {
@@ -433,7 +433,7 @@ func (store *memoryBearers) ResolveDesktopBearer(_ context.Context, digest strin
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	bearer, ok := store.items[digest]
-	return bearer, ok && bearer.ExpiresAt.Unix() >= now.Unix(), nil
+	return bearer, ok && bearer.ExpiresAt.After(now), nil
 }
 
 func (store *memoryBearers) RevokeDesktopBearer(_ context.Context, digest string, _ time.Time) (bool, error) {
@@ -510,7 +510,7 @@ type serviceHarness struct {
 
 func newServiceHarness(t *testing.T, mode EmailVerificationMode, provider *fakeProvider) *serviceHarness {
 	t.Helper()
-	now := time.Date(2026, 11, 10, 11, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 11, 10, 11, 0, 0, 500_000_000, time.UTC)
 	accounts, sessions := newMemoryAccounts(), &memorySessions{}
 	policy := &memoryPolicy{mode: mode, accounts: accounts}
 	resetTokens, verifyTokens, emails := newMemoryTokens(), newMemoryTokens(), &memoryEmails{}
@@ -738,6 +738,51 @@ func TestFacebookLinkedIdentityCanSignInWithoutEmailClaim(t *testing.T) {
 	}
 }
 
+func TestAppleMissingEmailRequiresExistingProviderLink(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		linked bool
+	}{
+		{name: "already linked", linked: true},
+		{name: "unknown provider subject"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const subject = "apple-subject-without-email"
+			provider := &fakeProvider{name: "apple", identity: ProviderIdentity{Provider: "apple", Subject: subject}}
+			h := newServiceHarness(t, VerificationDisabled, provider)
+			var existing Account
+			if test.linked {
+				existing = h.accounts.seedPassword(t, "apple-linked@example.test", "apple-linked", true)
+				if err := h.accounts.LinkProviderIdentity(context.Background(), existing.ID, "apple", subject, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			redirect := "https://nexss.example.test/auth/oauth/apple/callback"
+			authorizationURL, err := h.service.BeginProviderLogin(context.Background(), "apple", redirect, false, RegistrationAttempt{}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := url.Parse(authorizationURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := h.service.CompleteProviderCallback(context.Background(), "apple", parsed.Query().Get("state"), "code")
+			if test.linked {
+				if err != nil || result.Account.ID != existing.ID {
+					t.Fatalf("callback account=%+v err=%v; expected existing linked account %q", result.Account, err, existing.ID)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidOAuthResponse) {
+				t.Fatalf("callback error=%v, want %v", err, ErrInvalidOAuthResponse)
+			}
+			if len(h.policy.provisionCalls) != 0 {
+				t.Fatalf("missing-email identity triggered %d account provision attempts", len(h.policy.provisionCalls))
+			}
+		})
+	}
+}
+
 func TestFacebookEmailConflictStillRequiresExplicitAuthenticatedLink(t *testing.T) {
 	provider := &fakeProvider{name: "facebook", identity: ProviderIdentity{Provider: "facebook", Subject: "meta-conflict", Email: "existing@example.test"}}
 	h := newServiceHarness(t, VerificationDisabled, provider)
@@ -884,7 +929,7 @@ func TestDesktopRejectsNonLoopbackRedirectsAndExpiredRequests(t *testing.T) {
 	}
 }
 
-func TestDesktopExpiryIsInclusiveAtExactSecond(t *testing.T) {
+func TestDesktopExpiryIsStrictAtPreciseTimestamp(t *testing.T) {
 	h := newServiceHarness(t, VerificationDisabled, nil)
 	account := h.accounts.seedPassword(t, "desktop-boundary@example.test", "desktop-boundary", true)
 	verifier, err := NewPKCEVerifier()
@@ -900,27 +945,27 @@ func TestDesktopExpiryIsInclusiveAtExactSecond(t *testing.T) {
 	h.desktop.requests[TokenDigest(requestState)] = DesktopAuthRequest{
 		CodeChallenge: challenge,
 		RedirectURI:   "http://127.0.0.1:24567/callback",
-		ExpiresAt:     h.now,
+		ExpiresAt:     h.now.Add(-100 * time.Millisecond),
 	}
-	if _, err := h.service.IssueDesktopAuthCode(context.Background(), requestState, account); err != nil {
-		t.Fatalf("request at exact expiry was rejected: %v", err)
+	if _, err := h.service.IssueDesktopAuthCode(context.Background(), requestState, account); !errors.Is(err, ErrInvalidDesktopAuth) {
+		t.Fatalf("request 100ms past expiry in the same Unix second err=%v, want ErrInvalidDesktopAuth", err)
 	}
 
 	code := strings.Repeat("b", 43)
 	h.desktop.codes[TokenDigest(code)] = DesktopAuthCode{
 		Subject: account.ID, AuthVersion: account.AuthVersion,
-		CodeChallenge: challenge, ExpiresAt: h.now,
+		CodeChallenge: challenge, ExpiresAt: h.now.Add(-100 * time.Millisecond),
 	}
-	if _, _, err := h.service.ExchangeDesktopAuthCode(context.Background(), code, verifier); err != nil {
-		t.Fatalf("code at exact expiry was rejected: %v", err)
+	if _, _, err := h.service.ExchangeDesktopAuthCode(context.Background(), code, verifier); !errors.Is(err, ErrInvalidDesktopAuth) {
+		t.Fatalf("code 100ms past expiry in the same Unix second err=%v, want ErrInvalidDesktopAuth", err)
 	}
 
 	bearer := strings.Repeat("c", 43)
 	h.bearers.items[TokenDigest(bearer)] = DesktopBearer{
-		Subject: account.ID, AuthVersion: account.AuthVersion, ExpiresAt: h.now,
+		Subject: account.ID, AuthVersion: account.AuthVersion, ExpiresAt: h.now.Add(-100 * time.Millisecond),
 	}
-	if _, ok, err := h.service.ResolveDesktopBearer(context.Background(), bearer); err != nil || !ok {
-		t.Fatalf("bearer at exact expiry: ok=%v err=%v", ok, err)
+	if _, ok, err := h.service.ResolveDesktopBearer(context.Background(), bearer); err != nil || ok {
+		t.Fatalf("bearer 100ms past expiry in the same Unix second: ok=%v err=%v", ok, err)
 	}
 
 	expiredRequestState := strings.Repeat("d", 64)

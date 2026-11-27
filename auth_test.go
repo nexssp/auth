@@ -233,6 +233,25 @@ func TestAuth_RefreshTokenUsesConfiguredTTL(t *testing.T) {
 	}
 }
 
+func TestAuth_RefreshRejectsAccessToken(t *testing.T) {
+	t.Parallel()
+	suite, db := setupAuthSuite(t)
+	defer func() { sqlDB, _ := db.DB(); sqlDB.Close() }()
+
+	suite.POST("/auth/register", map[string]string{"email": "refresh-purpose@nexss.dev", "password": "Password123!"}).Do().ExpectCreated()
+	res := suite.POST("/auth/login", map[string]string{"email": "refresh-purpose@nexss.dev", "password": "Password123!"}).Do().ExpectOK()
+	var body struct {
+		Token struct {
+			Access string `json:"access_token"`
+		} `json:"token"`
+	}
+	res.Into(&body)
+	if body.Token.Access == "" {
+		t.Fatal("login returned an empty access token")
+	}
+	suite.POST("/auth/refresh", map[string]string{"refresh_token": body.Token.Access}).Do().ExpectUnauthorized()
+}
+
 func TestNewGORMStoreRejectsNilDatabase(t *testing.T) {
 	store, err := auth.NewGORMStore(nil)
 	if err == nil || store != nil {
@@ -272,5 +291,42 @@ func TestGORMStore_ActionTokensAreHashedAtRest(t *testing.T) {
 	}
 	if _, err := store.GetResetToken(ctx, rawReset); err == nil {
 		t.Fatal("deleted reset token remained valid")
+	}
+}
+
+func TestGORMStore_ConsumesVerificationTokenAtomically(t *testing.T) {
+	t.Parallel()
+	dbPath := filepath.Join(t.TempDir(), "verification.db")
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+	store, err := auth.NewGORMStore(db)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	consumer, ok := any(store).(auth.VerificationTokenConsumer)
+	if !ok {
+		t.Fatal("GORMStore does not implement VerificationTokenConsumer")
+	}
+
+	ctx := context.Background()
+	token := "account-1:123456"
+	if err := store.CreateVerificationToken(ctx, "account-1", token, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.ConsumeVerificationToken(ctx, "account-2", token); err == nil {
+		t.Fatal("verification token was consumed for the wrong user")
+	}
+	if err := consumer.ConsumeVerificationToken(ctx, "account-1", token); err != nil {
+		t.Fatalf("consume valid verification token: %v", err)
+	}
+	if err := consumer.ConsumeVerificationToken(ctx, "account-1", token); err == nil {
+		t.Fatal("verification token was consumed more than once")
 	}
 }

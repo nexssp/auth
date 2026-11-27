@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math/big"
@@ -78,14 +79,14 @@ func (p *EmailMFAProvider) Challenge(ctx context.Context, user *User) (string, e
 
 func (p *EmailMFAProvider) Verify(ctx context.Context, user *User, input string) error {
 	dbToken := user.ID + ":" + input
-	tokenUserID, err := p.store.GetVerificationToken(ctx, dbToken)
-	if err != nil || tokenUserID != user.ID {
-		return xerr.Unauthorized("Nieprawidłowy lub wygasły kod.")
-	}
-
-	// Sukces: Spalamy kod (One-Time Use)
-	if cleanupErr := p.store.DeleteVerificationToken(ctx, dbToken); cleanupErr != nil {
-		slog.ErrorContext(ctx, "MFA verification token cleanup failed")
+	if err := consumeVerificationToken(ctx, p.store, user.ID, dbToken); err != nil {
+		if errors.Is(err, errAtomicVerificationTokenConsumptionUnavailable) {
+			return xerr.Unavailable("Email MFA storage does not support atomic code consumption")
+		}
+		if errors.Is(err, ErrInvalidVerificationToken) {
+			return xerr.Unauthorized("Nieprawidłowy lub wygasły kod.")
+		}
+		return xerr.Unavailable("Email MFA verification is unavailable")
 	}
 	return nil
 }

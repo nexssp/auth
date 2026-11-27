@@ -818,7 +818,7 @@ func (s *Service) IssueDesktopAuthCode(ctx context.Context, state string, accoun
 	}
 	var callbackURL string
 	err := s.config.DesktopAuth.ConsumeDesktopAuthRequest(ctx, TokenDigest(state), s.config.Now(), func(callbackCtx context.Context, request DesktopAuthRequest) error {
-		if request.ExpiresAt.Unix() < s.config.Now().Unix() || !validDesktopRedirectURI(request.RedirectURI) || !pkceChallengePattern.MatchString(request.CodeChallenge) {
+		if !request.ExpiresAt.After(s.config.Now()) || !validDesktopRedirectURI(request.RedirectURI) || !pkceChallengePattern.MatchString(request.CodeChallenge) {
 			return ErrInvalidDesktopAuth
 		}
 		code, err := NewOpaqueToken()
@@ -857,7 +857,7 @@ func (s *Service) ExchangeDesktopAuthCode(ctx context.Context, code, verifier st
 	var bearerValue string
 	var bearerExpiry time.Time
 	err = s.config.DesktopAuth.ConsumeDesktopAuthCode(ctx, TokenDigest(code), s.config.Now(), func(callbackCtx context.Context, authCode DesktopAuthCode) error {
-		if authCode.ExpiresAt.Unix() < s.config.Now().Unix() || len(authCode.CodeChallenge) != len(challenge) || subtle.ConstantTimeCompare([]byte(authCode.CodeChallenge), []byte(challenge)) != 1 {
+		if !authCode.ExpiresAt.After(s.config.Now()) || len(authCode.CodeChallenge) != len(challenge) || subtle.ConstantTimeCompare([]byte(authCode.CodeChallenge), []byte(challenge)) != 1 {
 			return ErrInvalidDesktopAuth
 		}
 		account, findErr := s.config.Accounts.FindByID(callbackCtx, authCode.Subject)
@@ -896,7 +896,7 @@ func (s *Service) ResolveDesktopBearer(ctx context.Context, token string) (Accou
 		}
 		return Account{}, false, err
 	}
-	return account, account.AuthVersion == bearer.AuthVersion && bearer.ExpiresAt.Unix() >= s.config.Now().Unix(), nil
+	return account, account.AuthVersion == bearer.AuthVersion && bearer.ExpiresAt.After(s.config.Now()), nil
 }
 
 func validDesktopRedirectURI(value string) bool {

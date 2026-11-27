@@ -7,11 +7,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 var (
@@ -118,6 +120,13 @@ type Tokens struct {
 	Refresh string `json:"refresh_token"`
 }
 
+const (
+	tokenUseAccess         = "access"
+	tokenUseRefresh        = "refresh"
+	tokenTypeMFAPreAuth    = "pre-auth"
+	tokenTypeTrustedDevice = "trusted_device"
+)
+
 func GenerateTokens(tenantID, userID, role string) (*Tokens, error) {
 	privateKey, _ := currentKeys()
 	if privateKey == nil {
@@ -125,21 +134,23 @@ func GenerateTokens(tenantID, userID, role string) (*Tokens, error) {
 	}
 	now := time.Now()
 	access, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"sub":  userID,
-		"ten":  tenantID,
-		"role": role,
-		"exp":  now.Add(15 * time.Minute).Unix(),
-		"iat":  now.Unix(),
-		"jti":  fmt.Sprintf("a-%s-%d", userID, now.UnixNano()),
+		"sub":       userID,
+		"ten":       tenantID,
+		"role":      role,
+		"token_use": tokenUseAccess,
+		"exp":       now.Add(15 * time.Minute).Unix(),
+		"iat":       now.Unix(),
+		"jti":       fmt.Sprintf("a-%s-%d", userID, now.UnixNano()),
 	}).SignedString(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("auth: sign access token: %w", err)
 	}
 	refresh, err := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"sub": userID,
-		"ten": tenantID,
-		"exp": now.Add(30 * 24 * time.Hour).Unix(),
-		"jti": fmt.Sprintf("r-%s-%d", userID, now.UnixNano()),
+		"sub":       userID,
+		"ten":       tenantID,
+		"token_use": tokenUseRefresh,
+		"exp":       now.Add(30 * 24 * time.Hour).Unix(),
+		"jti":       fmt.Sprintf("r-%s-%d", userID, now.UnixNano()),
 	}).SignedString(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("auth: sign refresh token: %w", err)
@@ -154,6 +165,10 @@ func GenerateTokensWithClaims(claims jwt.MapClaims) (*Tokens, error) {
 }
 
 func generateTokensWithClaims(claims jwt.MapClaims, refreshTTL time.Duration) (*Tokens, error) {
+	return generateTokensWithRefreshID(claims, refreshTTL, uuid.NewString())
+}
+
+func generateTokensWithRefreshID(claims jwt.MapClaims, refreshTTL time.Duration, refreshID string) (*Tokens, error) {
 	privateKey, _ := currentKeys()
 	if privateKey == nil {
 		return nil, errors.New("auth: keys not initialized")
@@ -161,17 +176,25 @@ func generateTokensWithClaims(claims jwt.MapClaims, refreshTTL time.Duration) (*
 	if refreshTTL <= 0 {
 		return nil, errors.New("auth: refresh token TTL must be positive")
 	}
-	access, err := jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(privateKey)
+	if refreshID == "" {
+		return nil, errors.New("auth: refresh token id is required")
+	}
+	if _, ok := claims["exp"]; !ok || claims["exp"] == nil {
+		return nil, errors.New("auth: access token expiration is required")
+	}
+	accessClaims := make(jwt.MapClaims, len(claims)+1)
+	maps.Copy(accessClaims, claims)
+	accessClaims["token_use"] = tokenUseAccess
+	access, err := jwt.NewWithClaims(jwt.SigningMethodRS256, accessClaims).SignedString(privateKey)
 	if err != nil {
 		return nil, fmt.Errorf("auth: sign access: %w", err)
 	}
 
 	refreshClaims := jwt.MapClaims{
-		"sub": claims["sub"],
-		"exp": time.Now().Add(refreshTTL).Unix(),
-	}
-	if jti, ok := claims["jti"]; ok {
-		refreshClaims["jti"] = jti
+		"sub":       claims["sub"],
+		"token_use": tokenUseRefresh,
+		"exp":       time.Now().Add(refreshTTL).Unix(),
+		"jti":       refreshID,
 	}
 	if tenantID, ok := claims["ten"]; ok {
 		refreshClaims["ten"] = tenantID
@@ -194,7 +217,55 @@ func VerifyToken(tokenString string) (*jwt.Token, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
 		return publicKey, nil
-	}, jwt.WithLeeway(5*time.Second), jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
+	}, jwt.WithLeeway(5*time.Second), jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}), jwt.WithExpirationRequired())
+}
+
+// VerifyAccessToken verifies a signed, expiring access token. Use this at
+// authorization boundaries instead of the purpose-agnostic VerifyToken helper.
+func VerifyAccessToken(tokenString string) (*jwt.Token, error) {
+	token, err := verifyTokenUse(tokenString, tokenUseAccess)
+	if err != nil {
+		return nil, err
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || claims["type"] == tokenTypeMFAPreAuth || claims["type"] == tokenTypeTrustedDevice {
+		return nil, errors.New("auth: invalid token purpose")
+	}
+	return token, nil
+}
+
+// VerifyRefreshToken verifies a signed, expiring refresh token.
+func VerifyRefreshToken(tokenString string) (*jwt.Token, error) {
+	return verifyTokenUse(tokenString, tokenUseRefresh)
+}
+
+func verifyTypedAccessToken(tokenString, wantType string) (*jwt.Token, error) {
+	// Legacy MFA credentials predate token_use; permit that omission only for
+	// their exact typed purpose, never for ordinary access-token verification.
+	token, err := VerifyToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || claims["type"] != wantType {
+		return nil, errors.New("auth: invalid token purpose")
+	}
+	if tokenUse, hasTokenUse := claims["token_use"]; hasTokenUse && tokenUse != tokenUseAccess {
+		return nil, errors.New("auth: invalid token purpose")
+	}
+	return token, nil
+}
+
+func verifyTokenUse(tokenString, want string) (*jwt.Token, error) {
+	token, err := VerifyToken(tokenString)
+	if err != nil {
+		return nil, err
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || claims["token_use"] != want {
+		return nil, errors.New("auth: invalid token purpose")
+	}
+	return token, nil
 }
 
 func currentKeys() (*rsa.PrivateKey, *rsa.PublicKey) {

@@ -475,6 +475,39 @@ func TestAppleCallbackVerifiesClientSecretAndOIDCToken(t *testing.T) {
 	if identity.Provider != "apple" || identity.Email != "verified@example.test" || !identity.EmailVerified {
 		t.Fatalf("identity=%+v", identity)
 	}
+	t.Run("string email_verified", func(t *testing.T) {
+		claims := fixture.validClaims("apple-nonce")
+		claims["email_verified"] = "true"
+		fixture.mu.Lock()
+		fixture.claims = claims
+		fixture.mu.Unlock()
+		identity, err := provider.Complete(context.Background(), "apple-code", "apple-nonce", verifier, redirect)
+		if err != nil || !identity.EmailVerified {
+			t.Fatalf("identity=%+v err=%v; Apple's string true claim should be verified", identity, err)
+		}
+	})
+	t.Run("missing email is returned for linked-identity resolution", func(t *testing.T) {
+		claims := fixture.validClaims("apple-nonce")
+		delete(claims, "email")
+		delete(claims, "email_verified")
+		fixture.mu.Lock()
+		fixture.claims = claims
+		fixture.mu.Unlock()
+		identity, err := provider.Complete(context.Background(), "apple-code", "apple-nonce", verifier, redirect)
+		if err != nil || identity.Subject != "provider-subject-123" || identity.Email != "" || identity.EmailVerified {
+			t.Fatalf("identity=%+v err=%v", identity, err)
+		}
+	})
+	t.Run("string false is not verified", func(t *testing.T) {
+		claims := fixture.validClaims("apple-nonce")
+		claims["email_verified"] = "false"
+		fixture.mu.Lock()
+		fixture.claims = claims
+		fixture.mu.Unlock()
+		if _, err := provider.Complete(context.Background(), "apple-code", "apple-nonce", verifier, redirect); err == nil {
+			t.Fatal("Apple identity with string false email_verified was accepted")
+		}
+	})
 	fixture.mu.Lock()
 	verified := fixture.appleSecretVerified
 	fixture.mu.Unlock()
@@ -535,6 +568,25 @@ func TestVerifiedEmailClaimRequiresJSONBoolean(t *testing.T) {
 	} {
 		if got := verifiedClaim(json.RawMessage(test.claim)); got != test.want {
 			t.Errorf("verifiedClaim(%s)=%v, want %v", test.claim, got, test.want)
+		}
+	}
+}
+
+func TestAppleEmailVerifiedClaimSupportsBooleanAndString(t *testing.T) {
+	for _, test := range []struct {
+		claim string
+		want  bool
+	}{
+		{claim: `true`, want: true},
+		{claim: `"true"`, want: true},
+		{claim: `false`, want: false},
+		{claim: `"false"`, want: false},
+		{claim: `"TRUE"`, want: false},
+		{claim: `1`, want: false},
+		{claim: `null`, want: false},
+	} {
+		if got := appleVerifiedClaim(json.RawMessage(test.claim)); got != test.want {
+			t.Errorf("appleVerifiedClaim(%s)=%v, want %v", test.claim, got, test.want)
 		}
 	}
 }
